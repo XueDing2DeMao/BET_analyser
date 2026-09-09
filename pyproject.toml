@@ -27,8 +27,11 @@ py-modules = [
   "bet_analysis",
   "langmuir",
   "rouquerol",
+  "smp_binary",
+  "smp_reader",
   "tplot_analysis",
   "xls_reader",
+  "zh_cn",
 ]
 
 [tool.setuptools.dynamic]

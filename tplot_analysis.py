@@ -95,6 +95,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import linregress
 
 from bet_analysis import N2_TPLOT_SLOPE_FACTOR, N2_STP_TO_LIQUID
+from zh_cn import setup_chinese_font, prepare_figure, zh
 
 # ── Publication style (matches bet_analysis.py) ────────────────
 plt.rcParams.update({
@@ -944,6 +945,7 @@ class TPlotAnalyser:
               micropore analysis was possible)
           [B] Pore type distribution bar chart (omitted when V_micro unknown)
         """
+        setup_chinese_font()
         res  = self.full_tplot_report(t_min, t_max)
         t_lo, t_hi = res["t_range"]
         has_micropore = res["micropore_analysis_possible"]
@@ -953,7 +955,7 @@ class TPlotAnalyser:
         # ── [A] t-plot ─────────────────────────────────────────
         ax = axes[0]
         ax.scatter(self.t, self.v, color=C_MICRO, s=35, zorder=5,
-                   label="Experimental data")
+                   label="实验数据")
 
         order = np.argsort(self.t)
         t_s, v_s = self.t[order], self.v[order]
@@ -963,33 +965,33 @@ class TPlotAnalyser:
         if single_line:
             # One straight line through the origin — no bend to mark.
             ax.scatter(t_s, v_s, color=C_TOTAL, s=55, zorder=6, marker="o",
-                       label="Line 1 (total)")
+                       label="第一线段（总比表面积）")
             t_line = np.linspace(0, self.t.max() * 1.02, 200)
             ax.plot(t_line, res["slope_1"] * t_line, "-", color=C_TOTAL, lw=1.8,
-                    label=f"Surface area  S={res['S_total_m2g']:.1f} m²/g")
+                    label=f"比表面积 S={res['S_total_m2g']:.1f} m²/g")
         elif has_micropore:
             # Highlight the two fitted segments
             split = res["n_points_1"]
             ax.scatter(t_s[:split], v_s[:split], color=C_TOTAL, s=55, zorder=6,
-                       marker="o", label="Line 1 (total)")
+                       marker="o", label="第一线段（总比表面积）")
             ax.scatter(t_s[split:], v_s[split:], color=C_EXT, s=55, zorder=6,
-                       marker="s", label="Line 2 (external)")
+                       marker="s", label="第二线段（外比表面积）")
 
             # Line 1: through the origin
             t_line1 = np.linspace(0, res["t_bend_A"] or self.t.min(), 100)
             ax.plot(t_line1, res["slope_1"] * t_line1, "-", color=C_TOTAL, lw=1.8,
-                    label=f"Total surface area  S={res['S_total_m2g']:.1f} m²/g")
+                    label=f"总比表面积  S={res['S_total_m2g']:.1f} m²/g")
             # Line 2
             t_line2 = np.linspace((res["t_bend_A"] or self.t.min()),
                                   self.t.max() * 1.02, 200)
             ax.plot(t_line2, res["slope_2"] * t_line2 + res["intercept_2"], "-",
                     color=C_EXT, lw=1.8,
-                    label=f"External surface area  S={res['S_external_m2g']:.1f} m²/g")
+                    label=f"外比表面积  S={res['S_external_m2g']:.1f} m²/g")
         else:
             t_line2 = np.linspace(t_lo, self.t.max() * 1.02, 200)
             ax.plot(t_line2, res["slope_2"] * t_line2 + res["intercept_2"], "-",
                     color=C_EXT, lw=1.8,
-                    label=f"External surface area  S={res['S_external_m2g']:.1f} m²/g")
+                    label=f"外比表面积  S={res['S_external_m2g']:.1f} m²/g")
 
         # Bend point (only when line 1 was fitted)
         if has_micropore and res["t_bend_A"] is not None and np.isfinite(res["t_bend_A"]):
@@ -1000,9 +1002,9 @@ class TPlotAnalyser:
                         textcoords="offset points", xytext=(8, -12),
                         fontsize=8.5)
 
-        ax.set_xlabel("Statistical film thickness  t (Å)", fontsize=11)
-        ax.set_ylabel("Volume adsorbed  (cm³ g⁻¹ STP)",   fontsize=11)
-        ax.set_title(f"T-Plot ({res['reference_curve']})", fontsize=11,
+        ax.set_xlabel("统计吸附膜厚度 t (Å)", fontsize=11)
+        ax.set_ylabel("吸附量  (cm³ g⁻¹ STP)",   fontsize=11)
+        ax.set_title(f"t-plot（{zh(res['reference_curve'])}）", fontsize=11,
                      fontweight="bold")
         ax.legend(fontsize=7.5)
         ax.grid(False)
@@ -1011,7 +1013,7 @@ class TPlotAnalyser:
         # Annotation box
         if single_line:
             ann = (f"$S$ = {res['S_total_m2g']:.1f} m² g⁻¹\n"
-                   "no micropore bend\n($S_{{micro}}$ = 0)")
+                   "未检测到微孔填充转折\n($S_{{micro}}$ = 0)")
         elif has_micropore:
             ann = (f"$S_{{total}}$ = {res['S_total_m2g']:.1f} m² g⁻¹\n"
                    f"$S_{{ext}}$ = {res['S_external_m2g']:.1f} m² g⁻¹\n"
@@ -1019,7 +1021,7 @@ class TPlotAnalyser:
                    f"$V_{{micro}}$ = {res['V_micro_cm3g']:.4f} cm³ g⁻¹")
         else:
             ann = (f"$S_{{ext}}$ = {res['S_external_m2g']:.1f} m² g⁻¹\n"
-                   "micropore analysis\nnot possible (undersampled)")
+                   "微孔分析\n无法定量（低压区数据不足）")
         ax.text(0.97, 0.05, ann, transform=ax.transAxes,
                 va="bottom", ha="right", fontsize=8.5,
                 bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.7", lw=0.7))
@@ -1034,13 +1036,13 @@ class TPlotAnalyser:
                 # p/p0 ≈ 0.99), so the pore fractions cannot be computed. Show
                 # the reader's reason instead of a bar chart — never a zero and
                 # never a silent empty panel.
-                reason = res.get("V_total_reason") or "total pore volume not determined"
-                ax2.text(0.5, 0.5, f"pore distribution unavailable\n({reason})",
+                reason = res.get("V_total_reason") or "未能确定总孔容"
+                ax2.text(0.5, 0.5, f"无法计算孔容占比\n（{zh(reason)}）",
                          ha="center", va="center", fontsize=9, color="0.4")
                 ax2.set_xticks([])
                 ax2.set_yticks([])
             else:
-                labels = ["Micropore", "Meso + Macro"]
+                labels = ["微孔", "介孔 + 大孔"]
                 values = [micro_pct, meso_pct]
                 colors = [C_MICRO, C_EXT]
                 bars = ax2.bar(labels, values, color=colors, width=0.5,
@@ -1049,21 +1051,22 @@ class TPlotAnalyser:
                     ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.8,
                              f"{val:.1f}%", ha="center", va="bottom", fontsize=10,
                              fontweight="bold")
-                ax2.set_ylabel("Pore Volume Fraction (%)", fontsize=11)
-                ax2.set_title("Pore Type Distribution", fontsize=11, fontweight="bold")
+                ax2.set_ylabel("孔容占比（%）", fontsize=11)
+                ax2.set_title("不同孔类型的孔容占比", fontsize=11, fontweight="bold")
                 ax2.set_ylim(0, max(values) * 1.18)
                 ax2.grid(axis="y", alpha=0.3)
-                ax2.text(0.5, -0.14, "V_macro needs Hg porosimetry (folded into Meso+Macro)",
+                ax2.text(0.5, -0.14, "大孔孔容需压汞法测定（此处计入介孔 + 大孔）",
                          transform=ax2.transAxes, ha="center", fontsize=7.5, color="0.4")
         else:
-            ax2.text(0.5, 0.5, "Micropore volume undetermined\n(insufficient points "
-                     "below p/p0 = 0.08)", ha="center", va="center", fontsize=9,
+            ax2.text(0.5, 0.5, "微孔孔容无法确定\n"
+                     "（低压区数据未满足微孔分析要求）", ha="center", va="center", fontsize=9,
                      color="0.4")
             ax2.set_xticks([])
             ax2.set_yticks([])
 
-        fig.suptitle(f"T-Plot Analysis — {sample_name}",
+        fig.suptitle(f"t-plot 分析 — {sample_name}",
                      fontsize=13, fontweight="bold", y=1.02)
+        prepare_figure(fig)
         plt.tight_layout()
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
         plt.close()

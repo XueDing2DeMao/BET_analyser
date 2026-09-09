@@ -7,6 +7,7 @@ License : MIT
 
 import io
 import warnings
+from tempfile import TemporaryDirectory
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -15,6 +16,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 import streamlit as st
 from pathlib import Path
+from zh_cn import zh, classification_description, rouquerol_report_zh, prepare_figure
 
 from bet_analysis import (
     read_bet_xls,
@@ -30,7 +32,6 @@ from bet_analysis import (
 from rouquerol import (
     select_bet_range,
     diagnose_instrument_range,
-    format_rouquerol_report,
     rouquerol_transform,
     bet_sensitivity_heatmap,
 )
@@ -46,7 +47,7 @@ from langmuir import (
 # ════════════════════════════════════════════════════════════════════════════
 
 st.set_page_config(
-    page_title="BET Analyser",
+    page_title='BET 比表面积分析',
     page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -58,6 +59,9 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+    html, body, [data-testid="stApp"], [data-testid="stSidebar"] {
+        font-family: "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    }
     .block-container { padding-top: 1.5rem; }
     .stAlert { border-radius: 8px; }
     .metric-box {
@@ -84,44 +88,34 @@ st.markdown("""
 
 def _make_csv_template() -> bytes:
     lines = [
-        "# BET Analyser — Manual Input Template",
-        "# Instructions:",
-        "#   1. Fill in each section below.",
-        "#   2. Do NOT change the section headers (lines starting with []).",
-        "#   3. Delete these comment lines before uploading.",
-        "#   4. Save as CSV (comma-separated).",
+        '# BET 分析 — 手动输入模板',
+        '# 填写说明：',
+        '#   1. 在各数据区填写数据；吸附量单位为 cm³(STP)/g。',
+        '#   2. 保留方括号区名、英文字段名及单位，不要翻译它们。',
+        '#   3. 以 # 开头的中文说明会被自动忽略。',
+        '#   4. 以 UTF-8 CSV（逗号分隔）格式保存。',
         "",
         "[ISOTHERM]",
-        "# Adsorption branch — at least 10 points recommended",
-        "pp0_ads,Va_ads_cm3g",
-        "0.050,5.10",
-        "0.100,7.20",
-        "0.150,8.80",
-        "0.200,10.50",
-        "0.250,12.10",
-        "0.300,14.00",
-        "0.400,17.50",
-        "0.500,21.00",
-        "0.600,26.00",
-        "0.700,32.00",
-        "0.800,42.00",
-        "0.900,58.00",
-        "0.950,68.00",
-        "",
-        "# Desorption branch — leave empty if no hysteresis",
-        "pp0_des,Va_des_cm3g",
-        "0.950,68.00",
-        "0.900,62.00",
-        "0.800,48.00",
-        "0.700,36.00",
-        "0.600,28.00",
-        "0.500,22.00",
-        "0.400,18.00",
-        "0.300,14.00",
+        '# 吸附支：建议至少 10 个数据点；pp0 为相对压力 p/p0。',
+        '# 前两列为吸附支，后两列为脱附支；无脱附数据时保留列名、将后两列留空。',
+        "pp0_ads,Va_ads_cm3g,pp0_des,Va_des_cm3g",
+        "0.050,5.10,0.950,68.00",
+        "0.100,7.20,0.900,62.00",
+        "0.150,8.80,0.800,48.00",
+        "0.200,10.50,0.700,36.00",
+        "0.250,12.10,0.600,28.00",
+        "0.300,14.00,0.500,22.00",
+        "0.400,17.50,0.400,18.00",
+        "0.500,21.00,0.300,14.00",
+        "0.600,26.00,,",
+        "0.700,32.00,,",
+        "0.800,42.00,,",
+        "0.900,58.00,,",
+        "0.950,68.00,,",
         "",
         "[BET_POINTS]",
-        "# BET linearisation points: 1/[Va(p0/p-1)] vs p/p0",
-        "# Select 5-10 points in the range 0.05 <= p/p0 <= 0.35",
+        '# BET 线性化数据：1/[Va(p0/p-1)] 对 p/p0。',
+        '# 在 0.05 <= p/p0 <= 0.35 区间选择 5–10 个数据点。',
         "pp0,y_bet",
         "0.050,0.0095",
         "0.100,0.0132",
@@ -131,7 +125,7 @@ def _make_csv_template() -> bytes:
         "0.300,0.0278",
         "",
         "[SUMMARY]",
-        "# Instrument-reported summary values (from your report printout)",
+        '# 仪器报告参数：S_BET/S_BJH 为比表面积；Vm 为单层饱和吸附量；C 为 BET 常数。',
         "parameter,value",
         "S_BET,95.30",
         "Vm,21.90",
@@ -143,9 +137,9 @@ def _make_csv_template() -> bytes:
         "rp_peak_BJH,4.00",
         "",
         "[BJH]",
-        "# BJH pore size distribution (adsorption branch)",
-        "# rp_nm = pore radius, dVp_drp = differential pore volume,",
-        "# cum_Vp = cumulative pore volume, cum_Sap = cumulative surface area",
+        '# BJH 孔径分布（吸附支）；rp_peak_BJH 为峰值孔半径，不是孔直径。',
+        '# rp_nm = 孔半径（nm）；dVp_drp = 按孔半径微分的孔容分布。',
+        '# cum_Vp = 累积孔容；cum_Sap = 累积比表面积。',
         "rp_nm,dVp_drp,cum-Vp,cum-Sap",
         "1.50,0.0010,0.0010,0.50",
         "2.00,0.0050,0.0060,2.00",
@@ -156,7 +150,7 @@ def _make_csv_template() -> bytes:
         "7.00,0.0060,0.0720,14.00",
         "10.00,0.0040,0.0760,14.50",
     ]
-    return "\n".join(lines).encode("utf-8")
+    return "\n".join(lines).encode("utf-8-sig")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -164,7 +158,7 @@ def _make_csv_template() -> bytes:
 # ════════════════════════════════════════════════════════════════════════════
 
 def _parse_csv_template(file_bytes: bytes) -> dict:
-    text = file_bytes.decode("utf-8")
+    text = file_bytes.decode("utf-8-sig")
     lines = [l for l in text.splitlines() if not l.strip().startswith("#")]
     sections = {}; current = None; buf = []
     for line in lines:
@@ -239,18 +233,18 @@ def _plot_isotherm(ads, des, iso_cls, hyst_cls) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(6, 4))
 
     ax.plot(ads[:, 0], ads[:, 1], "o-", color=C_ADS,
-            ms=5, lw=1.5, label="Adsorption")
+            ms=5, lw=1.5, label='吸附支')
 
     if len(des) > 0:
         sort_d = np.argsort(des[:, 0])[::-1]
         ax.plot(des[sort_d, 0], des[sort_d, 1], "s--", color=C_DES,
-                ms=5, lw=1.5, label="Desorption")
+                ms=5, lw=1.5, label='脱附支')
         pp0_fill = np.concatenate([ads[:, 0], des[sort_d, 0][::-1]])
         Va_fill  = np.concatenate([ads[:, 1], des[sort_d, 1][::-1]])
         ax.fill(pp0_fill, Va_fill, alpha=0.10, color=C_ADS)
 
-    ax.set_xlabel(r"Relative Pressure ($p/p_0$)", fontsize=11)
-    ax.set_ylabel(r"Volume Adsorbed (cm$^3$ g$^{-1}$ STP)", fontsize=11)
+    ax.set_xlabel(r"相对压力 ($p/p_0$)", fontsize=11)
+    ax.set_ylabel(r"吸附量 (cm$^3$ g$^{-1}$ STP)", fontsize=11)
     ax.set_xlim(-0.01, 1.01)
     ax.set_ylim(bottom=0)
     ax.xaxis.set_minor_locator(AutoMinorLocator())
@@ -258,12 +252,13 @@ def _plot_isotherm(ads, des, iso_cls, hyst_cls) -> plt.Figure:
     ax.legend(loc="upper left", fontsize=9)
 
     hl = hyst_cls["type"]
-    ann = iso_cls["type"] + (f" / {hl}" if hl != "None" else "")
-    ax.text(0.03, 0.96, ann, transform=ax.transAxes,
-            va="top", ha="left", fontsize=9,
+    ann = zh(iso_cls["type"]) + (f" / {hl}" if hl != "None" else "")
+    ax.text(0.97, 0.05, ann, transform=ax.transAxes,
+            va="bottom", ha="right", fontsize=9,
             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.7", lw=0.7))
 
-    ax.set_title("N₂ Adsorption–Desorption Isotherm (77 K)", fontsize=11)
+    ax.set_title("N₂ 吸附–脱附等温线 (77 K)", fontsize=11)
+    prepare_figure(plt.gcf())
     plt.tight_layout()
     return fig
 
@@ -285,14 +280,14 @@ def _plot_rouquerol_transform(p_rel, n, best_window) -> plt.Figure:
         a.plot(p_rel, t, "o-", color=C_ADS, ms=4, lw=1.4, label="n(1−p/p₀)")
         if best_window is not None:
             a.axvspan(best_window.p_min, best_window.p_max,
-                      alpha=0.18, color=C_BET, label="Selected BET range")
+                      alpha=0.18, color=C_BET, label="所选 BET 区间")
             a.axvline(best_window.p_min, ls="--", lw=0.9, color=C_BET)
             a.axvline(best_window.p_max, ls="--", lw=0.9, color=C_BET)
         a.set_xlabel(r"$p/p_0$")
         a.set_ylabel(r"$n(1-p/p_0)$  (cm³ g⁻¹)")
 
     ax.legend(fontsize=8)
-    ax.set_title("Rouquerol Transform (full range)", fontsize=10)
+    ax.set_title("Rouquerol 变换（全区间）", fontsize=10)
 
     if best_window is not None:
         margin = 0.1 * (best_window.p_max - best_window.p_min)
@@ -306,10 +301,11 @@ def _plot_rouquerol_transform(p_rel, n, best_window) -> plt.Figure:
             y_margin = 0.1 * (y_win.max() - y_win.min())
             ax_zoom.set_ylim(y_win.min() - y_margin, y_win.max() + y_margin)
         ax_zoom.legend(fontsize=8)
-        ax_zoom.set_title("Selected BET range (zoomed)", fontsize=10)
+        ax_zoom.set_title("所选 BET 区间（局部放大）", fontsize=10)
     else:
-        ax_zoom.set_title("Selected BET range", fontsize=10)
+        ax_zoom.set_title("所选 BET 区间", fontsize=10)
 
+    prepare_figure(plt.gcf())
     plt.tight_layout()
     return fig
 
@@ -355,10 +351,11 @@ def _plot_bet_heatmap(heatmap_result, best_window) -> plt.Figure:
     ax.set_yticks(tick_pos)
     ax.set_yticklabels(tick_labels, fontsize=8)
 
-    ax.set_xlabel("End point p/p₀")
-    ax.set_ylabel("Start point p/p₀")
+    ax.set_xlabel("终点相对压力 p/p₀")
+    ax.set_ylabel("起点相对压力 p/p₀")
     plt.colorbar(im, ax=ax, label="S_BET (m² g⁻¹)")
-    ax.set_title("BET Sensitivity Heatmap", fontsize=10)
+    ax.set_title("BET 比表面积对选区的敏感性热图", fontsize=10)
+    prepare_figure(plt.gcf())
     plt.tight_layout()
     return fig
 
@@ -371,11 +368,11 @@ def _plot_langmuir_linear(p_all, n_all, result) -> plt.Figure:
     y_all = langmuir_linear_y(p_all, n_all)
     valid_all = np.isfinite(y_all)
     ax.scatter(p_all[valid_all], y_all[valid_all],
-               color="0.75", s=22, zorder=2, label="All points")
+               color="0.75", s=22, zorder=2, label='全部数据点')
 
     x = result["x"]
     y = result["y"]
-    ax.scatter(x, y, color=C_BJH, s=32, zorder=4, label="Fitted")
+    ax.scatter(x, y, color=C_BJH, s=32, zorder=4, label='拟合数据点')
 
     x_fit = np.linspace(x.min(), x.max(), 200)
     ax.plot(x_fit, result["slope"] * x_fit + result["intercept"],
@@ -389,7 +386,8 @@ def _plot_langmuir_linear(p_all, n_all, result) -> plt.Figure:
     ax.text(0.05, 0.85,
             f"S = {result['S_Langmuir']:.2f} ± {result['sigma_S_Langmuir']:.2f} m² g⁻¹",
             transform=ax.transAxes, va="top", fontsize=9)
-    ax.set_title("Langmuir Linear Plot", fontsize=10)
+    ax.set_title("Langmuir 线性图", fontsize=10)
+    prepare_figure(plt.gcf())
     plt.tight_layout()
     return fig
 
@@ -418,49 +416,110 @@ def _match_instrument_window_by_pressure(p_ads, n_ads, bet_pts,
 # SIDEBAR
 # ════════════════════════════════════════════════════════════════════════════
 
+def _native_smp_info(parsed):
+    st.success(f"已直接读取 SMP：{len(parsed['ads'])} 个吸附点、{len(parsed['des'])} 个脱附点。")
+    st.caption(
+        f"{parsed['version']} · 样品质量 {parsed['mass']:.4f} g · N₂。"
+        "直接读取目前仅经一个 ASAP 2460 样品核对，其他版本和校正配置可能需要 XLS。"
+    )
+    with st.expander("SMP 测量信息"):
+        c = parsed['conditions']
+        st.write({"样品": parsed['name'], "仪器序列号": parsed['serial'],
+                  "分析温度 (K)": c['bath'], "环境自由空间 (cm³)": c['warm'],
+                  "分析自由空间 (cm³)": c['cold'], "非理想气体校正因子 (mmHg⁻¹)": c['alpha']})
+    return st.checkbox("改用仪器导出的 XLS/XLSX 报告", key="smp_prefer_export")
+
+
+def _smp_export_upload(source):
+    """已验证的 SMP 直接分析；未支持的布局保留配套报告入口。"""
+    from xls_reader import validate_smp
+    from smp_reader import inspect_smp
+    try:
+        validate_smp(source.getvalue())
+    except ValueError as exc:
+        st.error(str(exc))
+        return None
+    try:
+        parsed = inspect_smp(source.getvalue())
+    except ValueError as exc:
+        st.info(f"已识别 Micromeritics SMP 原始文件，但暂不能直接分析此文件。{exc}")
+    else:
+        if not _native_smp_info(parsed):
+            return source
+        st.info("已切换为仪器 XLS/XLSX 报告导入。")
+    with st.expander("如何从 SMP 导出报告"):
+        st.markdown(
+            "在 ASAP / MicroActive 软件中打开 SMP，使用 **Reports → Start Report**，"
+            "选择汇总报告、等温线线性图及 BET 报告；需要孔径分布时，同时选择 "
+            "BJH 吸附支分布表和 dV/dD 曲线。将报告保存为 **Spreadsheet (*.XLS)**。"
+        )
+    exported = st.file_uploader(
+        "上传该样品导出的 XLS/XLSX", type=["xls", "xlsx"], key="smp_export",
+    )
+    if exported is not None:
+        st.caption(f"分析数据来源：{exported.name}；SMP 文件仅作格式识别，未参与数值计算。")
+    return exported
+
+
 with st.sidebar:
-    st.title("🔬 BET Analyser")
-    st.caption("Publication-quality BET/BJH + T-Plot analysis")
+    st.title('🔬 BET 比表面积分析')
+    st.caption("BET/BJH 与 t-plot 分析 · 支持论文级图表")
     st.divider()
 
-    st.subheader("📁 Input")
+    st.subheader('📁 数据输入')
     input_mode = st.radio(
-        "File format",
-        ["Instrument XLS", "Manual CSV"],
+        '文件格式',
+        ['仪器数据（SMP / XLS / XLSX）', '手动录入（CSV 模板）'],
     )
 
-    if input_mode == "Manual CSV":
-        st.info("📥 Download the template, fill in your data, then upload it here.")
+    if input_mode == '手动录入（CSV 模板）':
+        st.info("📥 下载模板、填写数据后，在此上传。")
         st.download_button(
-            label="⬇ Download CSV Template",
+            label="⬇ 下载 CSV 模板",
             data=_make_csv_template(),
             file_name="BET_template.csv",
             mime="text/csv",
         )
 
     uploaded = st.file_uploader(
-        "Upload your file",
-        type=["xls", "xlsx", "csv"],
+        '上传数据文件',
+        type=["xls", "xlsx", "csv", "smp"],
+        help="支持已验证的 ASAP 2460 v3.01 SMP、单表 XLS/XLSX 和原有格式；未知 SMP 配置可改用仪器报告。",
     )
+    if uploaded is not None and Path(uploaded.name).suffix.lower() == ".smp":
+        uploaded = _smp_export_upload(uploaded)
 
     st.divider()
-    default_sample = Path(uploaded.name).stem if uploaded is not None else "Sample"
-    sample_name = st.text_input("Sample name", value=default_sample)
+    default_sample = Path(uploaded.name).stem if uploaded is not None else '样品'
+    sample_name = st.text_input('样品名称', value=default_sample)
 
     st.divider()
-    st.subheader("⚙️ Options")
-    show_tplot    = st.checkbox("Show T-Plot analysis", value=True)
-    show_features = st.checkbox("Show hysteresis feature table", value=True)
+    st.subheader('⚙️ 分析选项')
+    show_tplot    = st.checkbox("显示 t-plot 微孔分析", value=True)
+    show_features = st.checkbox("显示滞后环特征表", value=True)
     use_rouquerol = st.checkbox(
-        "Use Rouquerol auto BET range",
+        "按 Rouquerol 判据自动选择 BET 线性区间",
         value=True,
-        help="Select BET linear range automatically using Rouquerol consistency criteria (IUPAC 2015).",
+        help="依据 Rouquerol 一致性判据（IUPAC 2015）自动选择 BET 线性拟合区间。",
     )
+
+    with st.expander("专业术语与单位"):
+        st.markdown(
+            "- **比表面积**：单位质量样品的表面积，通常以 m²/g 表示。\n"
+            "- **吸附量**：本软件使用标准状况下的气体体积，单位 cm³(STP)/g；STP 指标准温度和压力条件。\n"
+            "- **孔容**：单位质量样品的孔体积，单位 cm³/g；与气体吸附量不同。\n"
+            "- **孔径分布（PSD）**：图中横轴按孔直径表示；仪器 BJH 原始 rp 字段表示孔半径。\n"
+            "- **滞后环**：吸附支与脱附支不重合形成的环。分类得分占比不是统计置信度。\n"
+            "- **Rouquerol 判据**：用于检查 BET 线性拟合区间的一致性。\n"
+            "- **t-plot（吸附膜厚度法）**：利用吸附量与统计膜厚的关系分析外比表面积和微孔。\n"
+            "- **不确定度**：表征估计值的不确定程度，不等同于测量误差。\n"
+            "- **Å（埃）**：1 Å = 0.1 nm。"
+        )
 
     st.divider()
     st.markdown(
         "**DOI:** [10.5281/zenodo.22116897](https://doi.org/10.5281/zenodo.22116897)  \n"
-        "MIT License · [GitHub](https://github.com/Hj1308/BET_analyser)"
+        "MIT 许可证 · [GitHub](https://github.com/Hj1308/BET_analyser)"
     )
 
 
@@ -468,34 +527,42 @@ with st.sidebar:
 # MAIN PAGE
 # ════════════════════════════════════════════════════════════════════════════
 
-st.title("🔬 BET / BJH Analyser")
-st.caption("Publication-quality physisorption analysis · IUPAC 2015 compliant")
+st.title('🔬 BET / BJH 比表面积与孔结构分析')
+st.caption("气体物理吸附分析 · 依据 IUPAC 2015 建议")
 
 if uploaded is None:
-    st.info("👈 Upload a file from the sidebar to start the analysis.")
+    st.info("👈 从左侧上传数据文件，开始分析。")
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.markdown("### 📁 Instrument XLS")
-        st.markdown("Direct output from **Belsorp**, ASAP, Quantachrome, or any compatible BET instrument.")
+        st.markdown("### 📁 仪器数据")
+        st.markdown("支持直接读取已验证的 **ASAP 2460 v3.01 SMP 原始数据**、单工作表 XLS/XLSX 报告及原有多工作表格式。")
     with c2:
-        st.markdown("### 📋 Manual CSV")
-        st.markdown("No instrument XLS? Download the **CSV template** from the sidebar.")
+        st.markdown("### 📋 手动录入 CSV")
+        st.markdown("没有仪器 XLS 文件时，可从左侧下载 **CSV 模板**，按说明填写数据。")
     with c3:
-        st.markdown("### 📊 What you get")
+        st.markdown("### 📊 分析内容")
         st.markdown(
-            "- IUPAC isotherm + hysteresis classification\n"
-            "- BET regression with R² and C-constant check\n"
-            "- Rouquerol auto BET range selection\n"
-            "- BJH differential PSD\n"
-            "- Cumulative pore volume vs surface area\n"
-            "- T-Plot micropore analysis\n"
-            "- Downloadable 300 dpi figure + CSV report"
+            "- IUPAC 等温线与滞后环分类\n"
+            "- BET 线性回归、决定系数 R² 与常数 C 检查\n"
+            "- 依据 Rouquerol 判据自动选择 BET 区间\n"
+            "- BJH 微分孔径分布\n"
+            "- 累积孔容与累积比表面积\n"
+            "- t-plot 微孔分析\n"
+            "- 下载 300 dpi 图像与 CSV 报告"
         )
     st.stop()
 
 
+def _read_uploaded_instrument(file_bytes: bytes, ext: str) -> dict:
+    """使用系统临时目录读取上传文件，并在解析后自动清理。"""
+    with TemporaryDirectory(prefix="bet-upload-") as tmp_dir:
+        tmp = Path(tmp_dir) / f"upload{ext}"
+        tmp.write_bytes(file_bytes)
+        return read_bet_xls(str(tmp))
+
+
 # ── Load & parse ─────────────────────────────────────────────────────────────────────
-with st.spinner("Reading file…"):
+with st.spinner("正在读取文件…"):
     try:
         file_bytes = uploaded.read()
         ext = Path(uploaded.name).suffix.lower()
@@ -504,25 +571,21 @@ with st.spinner("Reading file…"):
             # two-column isotherm CSV.
             first = ""
             for line in file_bytes.decode("utf-8-sig", errors="ignore").splitlines():
-                if line.strip():
+                if line.strip() and not line.lstrip().startswith("#"):
                     first = line.strip()
                     break
             if first.startswith("[") and "]" in first:
                 data = _parse_csv_template(file_bytes)
             else:
-                tmp = Path(f"/tmp/{uploaded.name}")
-                tmp.write_bytes(file_bytes)
-                data = read_bet_xls(str(tmp))
+                data = _read_uploaded_instrument(file_bytes, ext)
         else:
-            tmp = Path(f"/tmp/{uploaded.name}")
-            tmp.write_bytes(file_bytes)
-            data = read_bet_xls(str(tmp))
+            data = _read_uploaded_instrument(file_bytes, ext)
     except Exception as e:
-        st.error(f"**File read error:** {e}")
+        st.error(f"**文件读取失败：** {zh(e)}")
         st.stop()
 
 # ── Run analysis ─────────────────────────────────────────────────────────────────────
-with st.spinner("Running analysis…"):
+with st.spinner("正在分析…"):
     iso_cls  = classify_isotherm(data["ads"], data["des"])
     hyst_cls = classify_hysteresis(data["ads"], data["des"])
     with warnings.catch_warnings(record=True) as caught_warnings:
@@ -530,7 +593,7 @@ with st.spinner("Running analysis…"):
         bet_res = verify_bet(data["bet_pts"], data["summary"])
 
 for w in caught_warnings:
-    st.warning(f"⚠ {w.message}")
+    st.warning(f"⚠ {zh(w.message)}")
 
 s = data["summary"]
 
@@ -541,7 +604,7 @@ rouquerol_result = None
 instrument_window = None
 
 if use_rouquerol:
-    with st.spinner("Running Rouquerol range selection…"):
+    with st.spinner("正在按 Rouquerol 判据选择区间…"):
         rouquerol_result = select_bet_range(p_ads, n_ads)
         if s.get("window_derived"):
             # No instrument window exists for a plain isotherm; the derived
@@ -570,21 +633,21 @@ if use_rouquerol:
 langmuir_result = None
 
 tab_overview, tab_bet, tab_langmuir, tab_rouquerol, tab_bjh, tab_tplot, tab_download = st.tabs([
-    "📊 Overview", "📈 BET", "⚗️ Langmuir", "🔬 Rouquerol", "🔵 BJH / PSD", "🔬 T-Plot", "📥 Download"
+    '📊 总览', '📈 BET 比表面积', '⚗️ Langmuir（朗缪尔）', '🔬 Rouquerol 选区', '🔵 BJH 孔径分布', '🔬 t-plot 微孔分析', '📥 结果下载'
 ])
 
 
 # ── TAB 1: OVERVIEW ─────────────────────────────────────────────────────────────────
 with tab_overview:
-    st.subheader(f"Results — {sample_name}")
+    st.subheader(f"分析结果 — {sample_name}")
 
     # ─ KPI metrics row
     cols = st.columns(4)
     kpi = [
-        (_fmt(s.get("S_BET"), ".2f"),   "m² g⁻¹",  "BET Surface Area"),
-        (_fmt(s.get("Vp_total"), ".4f"), "cm³ g⁻¹", "Total Pore Volume"),
-        (_fmt(s.get("dp_avg"), ".1f"),   "nm",       "Avg Pore Diameter"),
-        (_fmt(s.get("C"), ".1f"),        "—",        "BET C Constant"),
+        (_fmt(s.get("S_BET"), ".2f"),   "m² g⁻¹",  "BET 比表面积"),
+        (_fmt(s.get("Vp_total"), ".4f"), "cm³ g⁻¹", "总孔容"),
+        (_fmt(s.get("dp_avg"), ".1f"),   "nm",       "平均孔径（直径）"),
+        (_fmt(s.get("C"), ".1f"),        "—",        "BET 常数 C"),
     ]
     for col, (val, unit, label) in zip(cols, kpi):
         with col:
@@ -601,95 +664,95 @@ with tab_overview:
     col_plot, col_cls = st.columns([2, 1])
 
     with col_plot:
-        st.markdown("**N₂ Adsorption–Desorption Isotherm**")
+        st.markdown("**N₂ 吸附–脱附等温线**")
         fig_iso = _plot_isotherm(data["ads"], data["des"], iso_cls, hyst_cls)
         st.pyplot(fig_iso, use_container_width=True)
         plt.close(fig_iso)
 
     with col_cls:
-        st.markdown("**Isotherm Classification**")
-        st.success(f"**{iso_cls['type']}**  \n{iso_cls['explanation']}")
+        st.markdown("**等温线分类**")
+        st.success(f"**{zh(iso_cls['type'])}**  \n{classification_description(iso_cls)}")
         if len(data.get("des", [])) == 0:
-            st.info("Type IV/V not evaluated — no desorption branch supplied "
-                    "(adsorption-only input).")
+            st.info("未判定 IV/V 型：未提供脱附支数据"
+                    "（输入仅包含吸附支）。")
 
-        st.markdown("**Hysteresis Classification**")
+        st.markdown("**滞后环分类**")
         if hyst_cls["type"] != "None":
             share = hyst_cls["score_share"]
             fn = st.success if share == "high" else st.warning if share == "moderate" else st.error
             fn(
                 f"**{hyst_cls['type']}**  \n"
-                f"{hyst_cls['explanation']}  \n"
-                f"Score share: {share} ({hyst_cls['score_share_pct']:.0f}% of total score)"
+                f"{classification_description(hyst_cls, hysteresis=True)}  \n"
+                f"得分占比：{zh(share)}（占总得分的 {hyst_cls['score_share_pct']:.0f}%，不是概率或统计置信度）"
             )
         elif len(data.get("des", [])) == 0:
-            st.info("Hysteresis not evaluated — no desorption branch supplied.")
+            st.info("未判定滞后环：未提供脱附支数据。")
         else:
-            st.info("No hysteresis detected.")
+            st.info("未检测到滞后环。")
 
         no_condensation_types = ("Type I(a)", "Type I(b)", "Type II", "Type III",
                                  "Type VI")
         if iso_cls["type"] in no_condensation_types and hyst_cls["type"] != "None":
             st.info(
-                f"A {hyst_cls['type']} hysteresis loop together with a "
-                f"{iso_cls['type']} isotherm is an expected combination — an H3 "
-                "loop sits on a Type II adsorption branch by definition "
+                f"{hyst_cls['type']} 滞后环与"
+                f"{zh(iso_cls['type'])} 等温线可以同时出现；H3 "
+                "型滞后环按定义可伴随 II 型吸附支"
                 "(Thommes et al. 2015 §4.3.2)."
             )
 
     st.divider()
 
     # ─ Summary table
-    st.markdown("**Summary Table**")
+    st.markdown("**参数汇总**")
     df_out = pd.DataFrame([
-        ["BET Surface Area",      _fmt(s.get("S_BET"), ".3f"),         "m² g⁻¹"],
-        ["Vm (monolayer cap.)",    _fmt(s.get("Vm"), ".4f"),            "cm³(STP) g⁻¹"],
-        ["BET C constant",         _fmt(s.get("C"), ".2f"),             "—"],
-        ["Total Pore Volume",      _fmt(s.get("Vp_total"), ".4f"),      "cm³ g⁻¹"],
-        ["Average Pore Diameter",  _fmt(s.get("dp_avg"), ".3f"),        "nm"],
-        ["BJH Surface Area",       _fmt(s.get("S_BJH"), ".3f"),         "m² g⁻¹"],
-        ["BJH Peak Pore Diameter", _fmt(None if s.get("rp_peak_BJH") is None else s["rp_peak_BJH"] * 2, ".2f"), "nm"],
-    ], columns=["Parameter", "Value", "Unit"])
+        ["BET 比表面积",      _fmt(s.get("S_BET"), ".3f"),         "m² g⁻¹"],
+        ["单层饱和吸附量 Vm",    _fmt(s.get("Vm"), ".4f"),            "cm³(STP) g⁻¹"],
+        ["BET 常数 C",         _fmt(s.get("C"), ".2f"),             "—"],
+        ["总孔容",      _fmt(s.get("Vp_total"), ".4f"),      "cm³ g⁻¹"],
+        ["平均孔径（直径）",  _fmt(s.get("dp_avg"), ".3f"),        "nm"],
+        ["BJH 比表面积",       _fmt(s.get("S_BJH"), ".3f"),         "m² g⁻¹"],
+        ["BJH 峰值孔径（直径）", _fmt(None if s.get("rp_peak_BJH") is None else s["rp_peak_BJH"] * 2, ".2f"), "nm"],
+    ], columns=['参数', '数值', '单位'])
     st.dataframe(df_out, use_container_width=True, hide_index=True)
 
     # ─ Declined / derived notes (plain-isotherm input) ──────────────
     if s.get("window_derived"):
-        st.caption("BET point window derived from the data (0.05 ≤ p/p₀ ≤ 0.35), "
-                   "not read from an instrument.")
+        method = "Rouquerol 一致性判据" if s.get("window_method") == "Rouquerol" else "默认压力范围（0.05 ≤ p/p₀ ≤ 0.35，点数不足时扩大范围）"
+        st.caption(f"BET 拟合区间由{method}确定，并非读取的仪器设定区间。")
     declined = []
     for label, reason in (s.get("declined") or {}).items():
-        declined.append(f"{label} ({reason})")
+        declined.append(f"{zh(label)}（{zh(reason)}）")
     if s.get("Vp_total_reason"):
-        declined.append(f"total pore volume (Gurvich) — {s['Vp_total_reason']}")
+        declined.append(f"总孔容（Gurvich 规则）— {zh(s['Vp_total_reason'])}")
     if declined:
-        st.info("**Not available (declined):** " + "; ".join(declined))
+        st.info("**数据不足，不予报告：** " + "; ".join(declined))
 
     tag = (
-        '<span class="tag-valid">✓ C constant valid</span>'
+        '<span class="tag-valid">✓ BET 常数 C 为正</span>'
         if bet_res["C_valid"] else
-        '<span class="tag-warning">⚠ C constant negative — check p/p₀ range</span>'
+        '<span class="tag-warning">⚠ BET 常数 C 为负，请检查相对压力区间</span>'
     )
     st.markdown(tag, unsafe_allow_html=True)
 
     for note in validity_warnings(s, iso_cls):
-        st.warning(note)
+        st.warning(zh(note))
 
     # ── Rouquerol summary on overview ─────────────────────────────────────────────
     if use_rouquerol and rouquerol_result is not None:
         best = rouquerol_result["best"]
         if best is not None:
             st.divider()
-            st.markdown("**Rouquerol BET Range**")
+            st.markdown("**Rouquerol BET 拟合区间**")
             if best.valid:
                 st.success(
-                    f"✓ **PASS** — Auto-selected range: p/p₀ = "
-                    f"{best.p_min:.4f} – {best.p_max:.4f} ({best.n_points} points)  \n"
+                    f"✓ **通过** — 自动选择的区间：p/p₀ = "
+                    f"{best.p_min:.4f} – {best.p_max:.4f}（{best.n_points} 个数据点）  \n"
                     f"S_BET = {best.S_BET:.2f} ± {best.sigma_S_BET:.2f} m² g⁻¹ | C = {best.C:.1f} ± {best.sigma_C:.1f} | R² = {best.R2:.6f}"
                 )
             else:
                 st.warning(
-                    f"⚠ **No fully consistent window found** — showing best compromise.  \n"
-                    f"p/p₀ = {best.p_min:.4f} – {best.p_max:.4f} ({best.n_points} points)  \n"
+                    f"⚠ **未找到满足全部一致性判据的区间** — 以下显示最佳折中结果。  \n"
+                    f"p/p₀ = {best.p_min:.4f} – {best.p_max:.4f}（{best.n_points} 个数据点）  \n"
                     f"S_BET = {best.S_BET:.2f} ± {best.sigma_S_BET:.2f} m² g⁻¹ | C = {best.C:.1f} ± {best.sigma_C:.1f} | R² = {best.R2:.6f}"
                 )
 
@@ -698,27 +761,27 @@ with tab_overview:
                 diff_pct = abs(best.S_BET - instrument_window.S_BET) / instrument_window.S_BET * 100
                 if diff_pct > 5:
                     st.warning(
-                        f"⚠ Instrument range S_BET = {instrument_window.S_BET:.3f} m² g⁻¹ "
-                        f"differs by {diff_pct:.1f}% from Rouquerol range. "
-                        f"Consider reporting the Rouquerol value."
+                        f"⚠ 仪器区间的 S_BET = {instrument_window.S_BET:.3f} m² g⁻¹ "
+                        f"与 Rouquerol 区间结果相差 {diff_pct:.1f}%。"
+                        f"可考虑报告 Rouquerol 区间的结果。"
                     )
                 else:
                     st.info(
-                        f"Instrument range S_BET = {instrument_window.S_BET:.3f} m² g⁻¹ "
-                        f"agrees with Rouquerol within {diff_pct:.1f}%."
+                        f"仪器区间的 S_BET = {instrument_window.S_BET:.3f} m² g⁻¹ "
+                        f"与 Rouquerol 结果的差异为 {diff_pct:.1f}%。"
                     )
 
 
 # ── TAB 2: BET PLOT ─────────────────────────────────────────────────────────────────
 with tab_bet:
-    st.subheader("BET Plot & Regression")
+    st.subheader("BET 线性图与回归分析")
 
     col_stats, col_fig = st.columns([1, 2])
     with col_stats:
-        st.markdown("**Regression Details**")
+        st.markdown("**回归参数**")
         st.table(pd.DataFrame({
-            "Parameter": ["Slope", "Intercept", "R²", "Vm (calc)", "C (calc)"],
-            "Value": [
+            '参数': ['斜率', '截距', "R²", '单层饱和吸附量 Vm（计算值）', 'BET 常数 C（计算值）'],
+            '数值': [
                 f"{bet_res['slope']:.6f}",
                 f"{bet_res['intercept']:.6f}",
                 f"{bet_res['R2']:.6f}",
@@ -727,18 +790,18 @@ with tab_bet:
             ],
         }))
         st.markdown(
-            f"Points used: **{s['start_pt']}** → **{s['end_pt']}** "
-            f"({s['end_pt'] - s['start_pt'] + 1} points)"
-            + (" *(window derived from the data, not read from an instrument)*"
+            f"所用数据点索引：**{s['start_pt']}** → **{s['end_pt']}** "
+            f"（{s['end_pt'] - s['start_pt'] + 1} 个数据点）"
+            + (" *（区间由数据确定，并非仪器设定值）*"
                if s.get("window_derived") else "")
         )
     with col_fig:
         setup_plot_style()
         fig_bet, ax = plt.subplots(figsize=(5, 3.8))
         ax.scatter(bet_res["all_pts"][:, 0], bet_res["all_pts"][:, 1],
-                   color="0.75", s=22, zorder=2, label="Unused")
+                   color="0.75", s=22, zorder=2, label='未参与拟合')
         ax.scatter(bet_res["x"], bet_res["y"],
-                   color=C_BET, s=32, zorder=4, label="Fitted")
+                   color=C_BET, s=32, zorder=4, label='拟合数据点')
         x_fit = np.linspace(bet_res["x"].min(), bet_res["x"].max(), 200)
         ax.plot(x_fit, bet_res["slope"] * x_fit + bet_res["intercept"],
                 "-", color=C_BET, lw=1.6)
@@ -762,6 +825,7 @@ with tab_bet:
         ax.legend(fontsize=8)
         ax.text(0.05, 0.94, f"R² = {bet_res['R2']:.5f}",
                 transform=ax.transAxes, va="top", fontsize=9)
+        prepare_figure(plt.gcf())
         plt.tight_layout()
         st.pyplot(fig_bet, use_container_width=True)
         plt.close(fig_bet)
@@ -769,14 +833,14 @@ with tab_bet:
 
 # ── TAB 3: LANGMUIR ─────────────────────────────────────────────────────────────────
 with tab_langmuir:
-    st.subheader("Langmuir Surface Area")
+    st.subheader("Langmuir（朗缪尔）比表面积")
 
     st.warning(
-        "**Langmuir interpretation:**\n\n"
-        "The Langmuir model assumes monolayer adsorption on uniform adsorption "
-        "sites. S_Langmuir is reported here as a complementary descriptor, not as "
-        "an automatic replacement for S_BET. Interpret it cautiously for "
-        "heterogeneous, mesoporous, or multilayer-adsorption systems."
+        "**Langmuir 模型解读：**\n\n"
+        "Langmuir 模型假定在均一吸附位点上发生单层吸附。"
+        "此处的 S_Langmuir 是补充表征参数，"
+        "不能直接替代 S_BET。对于"
+        "非均一表面、介孔或多层吸附体系，应谨慎解释结果。"
     )
 
     lang_valid = (
@@ -791,8 +855,8 @@ with tab_langmuir:
 
     if len(p_lang) < MIN_LANGMUIR_POINTS:
         st.error(
-            "Langmuir analysis requires at least 3 physical adsorption points "
-            "with 0 < p/p₀ < 1 and positive adsorbed amount."
+            "Langmuir 分析至少需要 3 个符合物理条件的吸附数据点，"
+            "且满足 0 < p/p₀ < 1、吸附量为正。"
         )
     else:
         p_lo_data = float(np.min(p_lang))
@@ -809,7 +873,7 @@ with tab_langmuir:
 
         step = max(round((p_hi_data - p_lo_data) / 200, 4), 0.001)
         lang_lo, lang_hi = st.slider(
-            "Langmuir fitting window (p/p₀)",
+            "Langmuir 拟合区间（p/p₀）",
             min_value=p_lo_data,
             max_value=p_hi_data,
             value=(default_lo, default_hi),
@@ -826,7 +890,7 @@ with tab_langmuir:
 
         if len(p_sel) < MIN_LANGMUIR_POINTS:
             st.warning(
-                "Langmuir fit requires at least 3 measured points in the selected p/p₀ window."
+                "所选相对压力区间内至少需要 3 个实测数据点，才能进行 Langmuir 拟合。"
             )
         else:
             try:
@@ -837,33 +901,33 @@ with tab_langmuir:
                     S_BET=s["S_BET"],
                 )
             except ValueError as e:
-                st.error(f"Langmuir fit error: {e}")
+                st.error(f"Langmuir 拟合失败：{zh(e)}")
                 result = None
 
             if result is not None:
                 applicable = result.get("model_applicable", result.get("physical_fit", False))
-                status = "PASS" if applicable else "FAIL"
+                status = '通过' if applicable else '未通过'
 
                 if applicable:
                     langmuir_result = result
                 else:
                     st.warning(
-                        "The Langmuir regression completed, but the model is not "
-                        "applicable to this isotherm (hysteresis present, no plateau, "
-                        "S_Langmuir > S_BET, or low R²) or parameters are non-physical. "
-                        "The result will not be added to the downloadable CSV report."
+                        "Langmuir 回归已完成，但该模型不适用于"
+                        "此等温线（存在滞后环、缺少平台、"
+                        "S_Langmuir 相对 S_BET 偏高或 R² 偏低），或者参数不符合物理条件。"
+                        "该结果不会写入下载的 CSV 报告。"
                     )
 
                 col_l1, col_l2 = st.columns([1, 2])
                 with col_l1:
-                    st.markdown("**Langmuir Fit Results**")
+                    st.markdown("**Langmuir 拟合结果**")
                     st.table(pd.DataFrame({
-                        "Parameter": [
-                            "p/p₀ min", "p/p₀ max", "Points",
-                            "S_Langmuir", "n_m", "K", "R²",
-                            "Model applicable", "Fit status",
+                        '参数': [
+                            '相对压力下限 p/p₀', '相对压力上限 p/p₀', '数据点数',
+                            "Langmuir 比表面积 S_Langmuir", "单层饱和吸附量 nₘ", "吸附平衡常数 K", "决定系数 R²",
+                            '模型适用性', '拟合状态',
                         ],
-                        "Value": [
+                        '数值': [
                             f"{result['p_min']:.4f}",
                             f"{result['p_max']:.4f}",
                             f"{result['n_points']}",
@@ -882,8 +946,8 @@ with tab_langmuir:
                     plt.close(fig_lang)
 
                 st.divider()
-                st.markdown("**Comparison with BET**")
-                sbet_label = "S_BET" if not s.get("instrument_summary", True) else "Instrument S_BET"
+                st.markdown("**与 BET 结果比较**")
+                sbet_label = "S_BET" if not s.get("instrument_summary", True) else "仪器 S_BET"
                 comp_rows = [
                     [sbet_label, _fmt(s.get("S_BET"), ".2f"), "—"],
                 ]
@@ -899,18 +963,18 @@ with tab_langmuir:
                 )
                 comp_df = pd.DataFrame(
                     comp_rows,
-                    columns=["Method", "Surface area (m² g⁻¹)", "Uncertainty (m² g⁻¹)"],
+                    columns=['方法', "比表面积（m² g⁻¹）", "不确定度（m² g⁻¹）"],
                 )
                 st.dataframe(comp_df, use_container_width=True, hide_index=True)
                 st.caption(
-                    "BET and Langmuir areas arise from different adsorption-model "
-                    "assumptions; agreement or disagreement should be interpreted with "
-                    "the isotherm type, pore structure, and quality of fit. "
-                    "S_Langmuir > S_BET by >20 % or model_applicable=✗ suggests the "
-                    "Langmuir model does not describe this isotherm."
+                    "BET 与 Langmuir 比表面积基于不同的吸附模型假设；"
+                    "结果是否一致，需要结合"
+                    "等温线类型、孔结构和拟合质量判断。"
+                    "若 S_Langmuir 比 S_BET 高出 20% 以上，或“模型适用性”为 ✗，表明"
+                    "Langmuir 模型不适合描述此等温线。"
                 )
 
-                with st.expander("Langmuir model and equations"):
+                with st.expander("Langmuir 模型与方程"):
                     st.latex(r"n = n_m \frac{K(p/p_0)}{1 + K(p/p_0)}")
                     st.latex(r"\frac{p/p_0}{n} = \frac{1}{K n_m} + \frac{p/p_0}{n_m}")
                     st.latex(r"S_{\mathrm{Langmuir}} = n_m \times 4.353")
@@ -918,23 +982,23 @@ with tab_langmuir:
 
 # ── TAB 4: ROUQUEROL ────────────────────────────────────────────────────────────────
 with tab_rouquerol:
-    st.subheader("Rouquerol BET Range Selection")
+    st.subheader("Rouquerol BET 区间选择")
 
     if not use_rouquerol:
-        st.info("Enable 'Use Rouquerol auto BET range' from the sidebar options.")
+        st.info("请在左侧启用“按 Rouquerol 判据自动选择 BET 线性区间”。")
     elif rouquerol_result is None:
-        st.warning("Rouquerol analysis could not be completed.")
+        st.warning("未能完成 Rouquerol 分析。")
     else:
         best = rouquerol_result["best"]
         if best is None:
-            st.error("No usable BET window found.")
+            st.error("未找到可用的 BET 拟合区间。")
         else:
             col_r1, col_r2 = st.columns([1, 2])
             with col_r1:
-                st.markdown("**Selected Range**")
+                st.markdown("**所选区间**")
                 st.table(pd.DataFrame({
-                    "Parameter": ["p/p₀ min", "p/p₀ max", "Points", "S_BET", "Vm", "C", "R²"],
-                    "Value": [
+                    '参数': ['相对压力下限 p/p₀', '相对压力上限 p/p₀', '数据点数', "BET 比表面积 S_BET", "单层饱和吸附量 Vm", "BET 常数 C", "决定系数 R²"],
+                    '数值': [
                         f"{best.p_min:.4f}",
                         f"{best.p_max:.4f}",
                         f"{best.n_points}",
@@ -944,8 +1008,8 @@ with tab_rouquerol:
                         f"{best.R2:.6f}",
                     ],
                 }))
-                st.markdown(f"**Candidates scanned:** {rouquerol_result['n_candidates']}")
-                st.markdown(f"**Valid windows:** {rouquerol_result['n_valid']}")
+                st.markdown(f"**已扫描候选区间数：** {rouquerol_result['n_candidates']}")
+                st.markdown(f"**满足判据的区间数：** {rouquerol_result['n_valid']}")
 
             with col_r2:
                 fig_rt = _plot_rouquerol_transform(p_ads, n_ads, best)
@@ -953,54 +1017,54 @@ with tab_rouquerol:
                 plt.close(fig_rt)
 
             st.divider()
-            st.markdown("**Rouquerol Consistency Criteria**")
+            st.markdown("**Rouquerol 一致性判据**")
             crit_df = pd.DataFrame({
-                "Criterion": [
-                    "C1: C > 0",
-                    "C2: n(1−p/p₀) increasing",
-                    "C3: nm in range",
-                    "C4: 1/(√C+1) matches p(nm)",
+                '判据': [
+                    "C1：BET 常数 C > 0",
+                    "C2：n(1−p/p₀) 随相对压力递增",
+                    "C3：单层吸附量对应压力 p(nₘ) 位于所选区间内",
+                    "C4：理论单层压力 1/(√C+1) 与实验值 p(nₘ) 一致",
                 ],
-                "Status": [
+                '状态': [
                     "✓" if best.c1_C_positive else "✗",
                     "✓" if best.c2_n1mp_increasing else "✗",
                     "✓" if best.c3_nm_in_range else "✗",
                     "✓" if best.c4_pm_consistency else "✗",
                 ],
-                "Detail": [
+                '说明': [
                     f"C = {best.C:.2f}",
-                    f"p_m,exp = {best.pm_exp:.4f}",
-                    f"p_m,th = {best.pm_theory:.4f}",
-                    f"tol = ±20%",
+                    "检查所选区间内 n(1−p/p₀) 的单调性",
+                    f"实验单层压力 pₘ = {best.pm_exp:.4f}",
+                    f"理论单层压力 pₘ = {best.pm_theory:.4f}；允许偏差 ±20%",
                 ],
             })
             st.dataframe(crit_df, use_container_width=True, hide_index=True)
 
             if heatmap_result is not None:
                 st.divider()
-                st.markdown("**BET Sensitivity Heatmap**")
+                st.markdown("**BET 比表面积对选区的敏感性热图**")
                 st.caption(
-                    "Each cell shows S_BET for a specific p/p₀ window "
-                    "(start × end). Colored = valid (Rouquerol PASS). "
-                    "Gray = invalid. Blue dashed = selected range."
+                    "每个单元格对应一个相对压力区间的 S_BET"
+                    "（起点 × 终点）。彩色：满足 Rouquerol 判据；"
+                    "灰色：未满足判据；蓝色虚线：所选区间。"
                 )
                 fig_hm = _plot_bet_heatmap(heatmap_result, best)
                 st.pyplot(fig_hm, use_container_width=True)
                 plt.close(fig_hm)
                 if heatmap_result["valid"].sum() <= 1:
                     st.info(
-                        "Only one Rouquerol-valid window was found. "
-                        "The heatmap confirms a unique fit, but range sensitivity "
-                        "cannot be assessed from multiple valid windows."
+                        "仅找到一个满足 Rouquerol 判据的区间。"
+                        "热图显示拟合区间唯一，无法利用多个有效区间"
+                        "评估选区敏感性。"
                     )
 
 
             if instrument_window is not None:
                 st.divider()
-                st.markdown("**Instrument Range vs Rouquerol** (matched by p/p₀)")
+                st.markdown("**仪器区间与 Rouquerol 区间比较** （按相对压力匹配）")
                 comp_df = pd.DataFrame({
-                    "Source": ["Instrument", "Rouquerol"],
-                    "p/p₀ range": [
+                    '来源': ['仪器结果', "Rouquerol"],
+                    '相对压力区间 p/p₀': [
                         f"{instrument_window.p_min:.4f} – {instrument_window.p_max:.4f}",
                         f"{best.p_min:.4f} – {best.p_max:.4f}",
                     ],
@@ -1016,7 +1080,7 @@ with tab_rouquerol:
                         f"{instrument_window.R2:.6f}",
                         f"{best.R2:.6f}",
                     ],
-                    "Valid": [
+                    '是否满足判据': [
                         "✓" if instrument_window.valid else "✗",
                         "✓" if best.valid else "✗",
                     ],
@@ -1024,13 +1088,13 @@ with tab_rouquerol:
                 st.dataframe(comp_df, use_container_width=True, hide_index=True)
 
             st.divider()
-            st.markdown("**Full Report**")
-            st.code(format_rouquerol_report(rouquerol_result, sample_name), language=None)
+            st.markdown("**完整报告**")
+            st.code(rouquerol_report_zh(rouquerol_result, sample_name), language=None)
 
 
 # ── TAB 5: BJH / PSD ─────────────────────────────────────────────────────────────────
 with tab_bjh:
-    st.subheader("BJH Pore Size Distribution")
+    st.subheader("BJH 孔径分布")
 
     bjh = data["bjh"]
 
@@ -1038,14 +1102,14 @@ with tab_bjh:
         peak_diam = s["rp_peak_BJH"] * 2.0
         if peak_diam < BJH_NARROW_MESOPORE_NM:
             st.warning(
-                f"⚠ BJH peak diameter {peak_diam:.1f} nm is below 10 nm — "
-                "Kelvin-equation (BJH) procedures underestimate narrow mesopore "
-                "size by ~20-30% (Thommes et al. 2015 §7.2, §9)."
+                f"⚠ BJH 峰值孔径（直径）为 {peak_diam:.1f} nm，小于 10 nm。"
+                "基于 Kelvin 方程的 BJH 方法可能低估窄介孔"
+                "孔径约 20%–30% (Thommes et al. 2015 §7.2, §9)."
             )
 
     if len(bjh) == 0:
-        st.info("BJH pore size distribution not available — no BJH table "
-                "supplied (plain-isotherm input).")
+        st.info("无法给出 BJH 孔径分布：输入未提供 BJH 表"
+                "（仅含等温线数据）。")
     else:
         # Instrument headers verified as radius ("rp/nm") and per-radius
         # differential ("dVp/drp"), so rp*2 = diameter and dV/dd = dV/dr / 2.
@@ -1062,42 +1126,43 @@ with tab_bjh:
         ax1.axvline(rp[pk], ls="--", lw=0.9, color=C_BJH, alpha=0.7)
         ax1.text(rp[pk]+0.3, dVdd[pk]*0.9, f"{rp[pk]:.1f} nm", fontsize=8, color=C_BJH)
         ax1.axvline(N2_CAVITATION_NM, ls=":", lw=0.8, color="0.6")
-        ax1.set_xlabel("Pore Diameter (nm)")
+        ax1.set_xlabel("孔径（直径） (nm)")
         ax1.set_ylabel(r"d$V_p$/d$d_p$ (cm³ g⁻¹ nm⁻¹)")
         ax1.set_xlim(left=0); ax1.set_ylim(bottom=0)
-        ax1.set_title("Differential PSD")
+        ax1.set_title("微分孔径分布")
 
         ax2r = ax2.twinx()
-        ax2.plot(rp, cum_Vp,  "-",  color=C_CUM, lw=1.5, label="Vp cumul.")
-        ax2r.plot(rp, cum_Sap, "--", color=C_BJH, lw=1.5, label="Sap cumul.")
-        ax2.set_xlabel("Pore Diameter (nm)")
-        ax2.set_ylabel("Cum. Pore Volume (cm³ g⁻¹)", color=C_CUM)
-        ax2r.set_ylabel("Cum. Surface Area (m² g⁻¹)", color=C_BJH)
+        ax2.plot(rp, cum_Vp,  "-",  color=C_CUM, lw=1.5, label='累积孔容 Vp')
+        ax2r.plot(rp, cum_Sap, "--", color=C_BJH, lw=1.5, label='累积比表面积 Sap')
+        ax2.set_xlabel("孔径（直径） (nm)")
+        ax2.set_ylabel("累积孔容 (cm³ g⁻¹)", color=C_CUM)
+        ax2r.set_ylabel("累积比表面积 (m² g⁻¹)", color=C_BJH)
         ax2.tick_params(axis="y", colors=C_CUM)
         ax2r.tick_params(axis="y", colors=C_BJH)
         ax2.set_xlim(left=0); ax2.set_ylim(bottom=0)
-        ax2.set_title("Cumulative Pore Volume")
+        ax2.set_title("累积孔容")
         l1, b1 = ax2.get_legend_handles_labels(); l2, b2 = ax2r.get_legend_handles_labels()
         ax2.legend(l1+l2, b1+b2, fontsize=8, loc="lower right")
+        prepare_figure(plt.gcf())
         plt.tight_layout()
         st.pyplot(fig_bjh, use_container_width=True)
         plt.close(fig_bjh)
 
     if show_features and hyst_cls["type"] != "None":
         st.divider()
-        st.markdown("**Hysteresis Feature Scores**")
+        st.markdown("**滞后环特征评分**")
         sc = hyst_cls["scores"]
         st.dataframe(
             pd.DataFrame([[k, v, "█"*v+"░"*(8-v)]
                           for k, v in sorted(sc.items(), key=lambda x: -x[1])],
-                         columns=["Type", "Score", "Bar"]),
+                         columns=['类型', '得分', '得分条']),
             hide_index=True, use_container_width=False
         )
-        st.markdown("**Feature Analysis**")
+        st.markdown("**特征分析**")
         st.dataframe(
-            pd.DataFrame([[k, ("✓" if v is True else "✗" if v is False else str(v))]
+            pd.DataFrame([[zh(k), ("✓" if v is True else "✗" if v is False else zh(v))]
                           for k, v in hyst_cls["features"].items()],
-                         columns=["Feature", "Value"]),
+                         columns=['特征', '数值']),
             hide_index=True, use_container_width=False
         )
 
@@ -1105,23 +1170,23 @@ with tab_bjh:
 # ── TAB 6: T-PLOT ──────────────────────────────────────────────────────────────────
 with tab_tplot:
     if not show_tplot:
-        st.info("Enable T-Plot analysis from the sidebar options.")
+        st.info("请在左侧启用 t-plot 微孔分析。")
     else:
-        st.subheader("T-Plot Micropore Analysis")
+        st.subheader("t-plot（吸附膜厚度法）微孔分析")
         try:
             from tplot_analysis import TPlotAnalyser, LINE1_T_MIN, HJ_VALID_T_MAX
 
             # ── S_BET source for the decomposition ────────────────────────────
             s_bet_tplot = s["S_BET"]
-            sbet_source = "instrument"
+            sbet_source = "仪器结果" if s.get("instrument_summary", True) else "等温线计算值"
             if (use_rouquerol and rouquerol_result is not None
                     and rouquerol_result["best"] is not None):
                 use_rq_sbet = st.checkbox(
-                    "Use Rouquerol S_BET for T-Plot decomposition",
+                    "t-plot 分析采用 Rouquerol 的 S_BET",
                     value=True,
-                    help=("S_micro = S_BET − S_ext is sensitive to the BET value. "
-                          "Using the Rouquerol-consistent S_BET keeps all reported "
-                          "numbers internally consistent."),
+                    help=("BET 比表面积的选取会影响与外比表面积的比较。"
+                          "采用满足 Rouquerol 判据的 S_BET，"
+                          "可统一各项报告中 BET 比表面积的来源。"),
                 )
                 if use_rq_sbet:
                     s_bet_tplot = rouquerol_result["best"].S_BET
@@ -1129,13 +1194,13 @@ with tab_tplot:
 
             # ── Adjustable fit window ─────────────────────────────────────────
             t_lo, t_hi = st.slider(
-                "T-Plot fit window (Å)",
+                "t-plot 拟合膜厚区间（Å）",
                 min_value=LINE1_T_MIN, max_value=8.0,
                 value=(LINE1_T_MIN, HJ_VALID_T_MAX), step=0.1,
-                help=("Two-segment t-plot window. The default spans line 1's "
-                      "floor (LINE1_T_MIN, micropore filling, p/p₀ ≈ 0.005) to "
-                      "line 2's ceiling (HJ_VALID_T_MAX); line 2 is kept inside "
-                      "the Harkins-Jura validity range 3.5–6.5 Å."),
+                help=("双线段 t-plot 拟合区间。默认从第一线段的最低膜厚"
+                      "（微孔填充区，p/p₀ ≈ 0.005）延伸至"
+                      "第二线段的最高膜厚；第二线段限制在"
+                      "Harkins–Jura 参考曲线的有效范围 3.5–6.5 Å 内。"),
             )
 
             tp = TPlotAnalyser(
@@ -1151,39 +1216,39 @@ with tab_tplot:
             # ── Sufficiency gate ─────────────────────────────────────────────
             if not res["micropore_analysis_possible"]:
                 st.warning(
-                    f"⚠ Micropore analysis not possible: {res['micropore_analysis_reason']}"
+                    f"⚠ 无法进行微孔定量分析：{zh(res['micropore_analysis_reason'])}"
                 )
 
             # ── Consistency warnings ──────────────────────────────────────────
             if res["n_points"] < 5:
                 st.warning(
-                    f"⚠ T-Plot fit uses only **{res['n_points']} points** in the "
-                    f"{res['t_range'][0]}–{res['t_range'][1]} Å window — R² is not "
-                    "meaningful with fewer than ~5 points. Widen the window above "
-                    "or measure more points in p/p₀ ≈ 0.08–0.30."
+                    f"⚠ t-plot 在"
+                    f"{res['t_range'][0]}–{res['t_range'][1]} Å 区间内仅使用 **{res['n_points']} 个数据点**；"
+                    "少于约 5 个点时，R² 的参考意义有限。请扩大拟合区间，"
+                    "或在 p/p₀ ≈ 0.08–0.30 区间补充测量。"
                 )
             if res["S_ext_m2g"] > res["S_BET_m2g"]:
                 over_pct = ((res["S_ext_m2g"] - res["S_BET_m2g"])
                             / res["S_BET_m2g"] * 100)
                 st.warning(
-                    f"⚠ S_ext ({res['S_ext_m2g']:.2f} m² g⁻¹) exceeds S_BET "
-                    f"({res['S_BET_m2g']:.2f} m² g⁻¹) by {over_pct:.1f}%. "
-                    "This is within the combined BET + t-plot uncertainty — "
-                    "interpret as **no detectable microporosity**, not as a precise "
-                    "decomposition."
+                    f"⚠ 外比表面积 S_ext（{res['S_ext_m2g']:.2f} m² g⁻¹）高于 S_BET "
+                    f"（{res['S_BET_m2g']:.2f} m² g⁻¹），超出 {over_pct:.1f}%。"
+                    "需结合 BET 与 t-plot 的不确定度判断；"
+                    "不应把该差异视为精确的微孔比表面积"
+                    "分解结果。"
                 )
 
             col_t1, col_t2 = st.columns([1, 2])
             with col_t1:
-                st.markdown("**T-Plot Results**")
+                st.markdown("**t-plot 分析结果**")
 
                 def _fmt(v, spec):
                     return "—" if v is None else f"{v:{spec}}"
 
                 st.table(pd.DataFrame({
-                    "Parameter": ["S_BET", "S_total", "S_ext", "S_micro",
-                                  "V_micro", "V_meso", "2t (mean pore Ø)"],
-                    "Value": [
+                    '参数': ["BET 比表面积 S_BET", "总比表面积 S_total", "外比表面积 S_ext", "微孔比表面积 S_micro",
+                                  "微孔孔容 V_micro", "介孔 + 大孔孔容 V_meso+macro", "2t（平均孔径估计值）"],
+                    '数值': [
                         _fmt(res["S_BET_m2g"], ".2f"),
                         _fmt(res["S_total_m2g"], ".2f"),
                         _fmt(res["S_ext_m2g"], ".2f"),
@@ -1192,18 +1257,18 @@ with tab_tplot:
                         _fmt(res["V_meso_cm3g"], ".4f"),
                         _fmt(res["2t_nm"], ".3f"),
                     ],
-                    "Unit": ["m² g⁻¹", "m² g⁻¹", "m² g⁻¹", "m² g⁻¹",
+                    '单位': ["m² g⁻¹", "m² g⁻¹", "m² g⁻¹", "m² g⁻¹",
                              "cm³ g⁻¹", "cm³ g⁻¹", "nm"],
                 }))
                 st.caption(
-                    f"S_BET source: **{sbet_source}** · "
-                    f"Fit range: {res['t_range'][0]}–{res['t_range'][1]} Å "
-                    f"({res['n_points']} pts) · reference: {res['reference_curve']}"
+                    f"S_BET 来源：**{sbet_source}** · "
+                    f"拟合区间：{res['t_range'][0]}–{res['t_range'][1]} Å "
+                    f"（{res['n_points']} 个点）· 参考曲线：{zh(res['reference_curve'])}"
                 )
                 if res.get("warnings"):
-                    st.warning("⚠ " + "; ".join(res["warnings"]))
+                    st.warning("⚠ " + "；".join(zh(note) for note in res["warnings"]))
                 if res.get("low_confidence"):
-                    st.info(f"Low confidence: {res['low_confidence_reason']}")
+                    st.info(f"结果可信度较低：{zh(res['low_confidence_reason'])}")
             with col_t2:
                 buf = io.BytesIO()
                 tp.plot_tplot(save_path=buf, sample_name=sample_name,
@@ -1211,17 +1276,17 @@ with tab_tplot:
                 buf.seek(0)
                 st.image(buf, use_container_width=True)
         except ImportError:
-            st.warning("tplot_analysis.py not found. T-Plot module unavailable.")
+            st.warning("未找到 tplot_analysis.py，t-plot 模块不可用。")
         except Exception as e:
-            st.error(f"T-Plot error: {e}")
+            st.error(f"t-plot 分析失败：{zh(e)}")
 
 
 # ── TAB 7: DOWNLOAD ─────────────────────────────────────────────────────────────────
 with tab_download:
-    st.subheader("Download Results")
+    st.subheader("下载分析结果")
 
-    st.markdown("• **📊 Publication Figure (4-panel, 300 dpi)**")
-    with st.spinner("Rendering figure…"):
+    st.markdown("• **📊 论文用图（四联图，300 dpi）**")
+    with st.spinner("正在生成图像…"):
         plt.show = lambda: None
         plot_all(data, iso_cls, hyst_cls, bet_res, sample_name, save=False)
         fig_main = plt.gcf()
@@ -1229,59 +1294,65 @@ with tab_download:
         plt.close(fig_main)
 
     st.download_button(
-        label="⬇ Download PNG (300 dpi)",
+        label="⬇ 下载 PNG 图像（300 dpi）",
         data=png_bytes,
         file_name=f"{sample_name.replace(' ', '_')}_BET_analysis.png",
         mime="image/png",
     )
 
     st.divider()
-    st.markdown("• **📋 CSV Report**")
+    st.markdown("• **📋 CSV 分析报告**")
     report_rows = [
-        ["Sample",              sample_name],
-        ["S_BET (m2/g)",        _fmt(s.get("S_BET"), ".3f")],
-        ["Vm (cm3(STP)/g)",     _fmt(s.get("Vm"), ".4f")],
-        ["C constant",          _fmt(s.get("C"), ".2f")],
-        ["C valid",             str(bet_res["C_valid"])],
-        ["R2",                  f"{bet_res['R2']:.6f}"],
-        ["Vp_total (cm3/g)",    _fmt(s.get("Vp_total"), ".4f")],
-        ["dp_avg (nm)",         _fmt(s.get("dp_avg"), ".3f")],
-        ["S_BJH (m2/g)",        _fmt(s.get("S_BJH"), ".3f")],
-        ["BJH_peak_diam (nm)",  _fmt(None if s.get("rp_peak_BJH") is None else s["rp_peak_BJH"] * 2, ".2f")],
-        ["Isotherm type",       iso_cls["type"]],
-        ["Hysteresis type",     hyst_cls["type"]],
-        ["Hysteresis score share", hyst_cls.get("score_share", "—")],
+        ['样品',              sample_name],
+        ['BET 比表面积 S_BET (m²/g)',        _fmt(s.get("S_BET"), ".3f")],
+        ['单层饱和吸附量 Vm (cm³(STP)/g)',     _fmt(s.get("Vm"), ".4f")],
+        ['BET 常数 C',          _fmt(s.get("C"), ".2f")],
+        ['BET 常数 C 是否为正',             zh(bet_res["C_valid"])],
+        ['决定系数 R²',                  f"{bet_res['R2']:.6f}"],
+        ['总孔容 Vp_total (cm³/g)',    _fmt(s.get("Vp_total"), ".4f")],
+        ['平均孔径（直径）dp_avg (nm)',         _fmt(s.get("dp_avg"), ".3f")],
+        ['BJH 比表面积 S_BJH (m²/g)',        _fmt(s.get("S_BJH"), ".3f")],
+        ['BJH 峰值孔径（直径）(nm)',  _fmt(None if s.get("rp_peak_BJH") is None else s["rp_peak_BJH"] * 2, ".2f")],
+        ['等温线类型',       zh(iso_cls["type"])],
+        ['滞后环类型',     zh(hyst_cls["type"])],
+        ['滞后环分类得分占比等级（非概率）', zh(hyst_cls.get("score_share", "—"))],
     ]
+    if s.get('source_format') == 'SMP':
+        report_rows.extend([
+            ['数据来源', '直接读取 ASAP 2460 v3.01 SMP 原始等温线；本项目计算结果'],
+            ['BET 区间来源', s.get('window_method', '默认压力范围')],
+            ['仪器 BJH 报告', '未从 SMP 解码，需配套 XLS/XLSX'],
+        ])
     if use_rouquerol and rouquerol_result is not None and rouquerol_result["best"] is not None:
         best = rouquerol_result["best"]
         report_rows.extend([
-            ["Rouquerol p/p0 min",  f"{best.p_min:.4f}"],
-            ["Rouquerol p/p0 max",  f"{best.p_max:.4f}"],
+            ['Rouquerol 相对压力下限',  f"{best.p_min:.4f}"],
+            ['Rouquerol 相对压力上限',  f"{best.p_max:.4f}"],
             ["Rouquerol S_BET",     f"{best.S_BET:.3f} ± {best.sigma_S_BET:.3f}"],
             ["Rouquerol C",         f"{best.C:.2f} ± {best.sigma_C:.2f}"],
-            ["Rouquerol R2",        f"{best.R2:.6f}"],
-            ["Rouquerol valid",     str(best.valid)],
+            ['Rouquerol 决定系数 R²',        f"{best.R2:.6f}"],
+            ['Rouquerol 判据是否全部满足',     zh(best.valid)],
         ])
     if langmuir_result is not None:
         report_rows.extend([
-            ["Langmuir p/p0 min",  f"{langmuir_result['p_min']:.4f}"],
-            ["Langmuir p/p0 max",  f"{langmuir_result['p_max']:.4f}"],
-            ["Langmuir S (m2/g)",  f"{langmuir_result['S_Langmuir']:.3f}"],
-            ["Langmuir S uncertainty (m2/g)", f"{langmuir_result['sigma_S_Langmuir']:.3f}"],
-            ["Langmuir n_m (cm3(STP)/g)", f"{langmuir_result['n_m']:.4f}"],
-            ["Langmuir K ((p/p0)^-1)", f"{langmuir_result['K']:.2f}"],
-            ["Langmuir R2",        f"{langmuir_result['R2']:.6f}"],
-            ["Langmuir physical fit", str(langmuir_result["physical_fit"])],
+            ['Langmuir 相对压力下限',  f"{langmuir_result['p_min']:.4f}"],
+            ['Langmuir 相对压力上限',  f"{langmuir_result['p_max']:.4f}"],
+            ['Langmuir 比表面积 (m²/g)',  f"{langmuir_result['S_Langmuir']:.3f}"],
+            ['Langmuir 比表面积不确定度 (m²/g)', f"{langmuir_result['sigma_S_Langmuir']:.3f}"],
+            ['Langmuir 单层饱和吸附量 n_m (cm³(STP)/g)', f"{langmuir_result['n_m']:.4f}"],
+            ['Langmuir 吸附平衡常数 K ((p/p0)^-1)', f"{langmuir_result['K']:.2f}"],
+            ['Langmuir 决定系数 R²',        f"{langmuir_result['R2']:.6f}"],
+            ['Langmuir 参数物理合理性', zh(langmuir_result["physical_fit"])],
         ])
     st.download_button(
-        label="⬇ Download CSV Report",
-        data=pd.DataFrame(report_rows, columns=["Parameter","Value"]).to_csv(index=False).encode(),
+        label="⬇ 下载 CSV 分析报告",
+        data=pd.DataFrame([(zh(label), value) for label, value in report_rows], columns=['参数','数值']).to_csv(index=False).encode("utf-8-sig"),
         file_name=f"{sample_name.replace(' ', '_')}_BET_report.csv",
         mime="text/csv",
     )
 
     st.divider()
-    st.markdown("• **📚 Cite this tool**")
+    st.markdown("• **📚 引用本工具**")
     citation = (
         "Jafari, H. (2026). BET_analyser: Publication-Quality BET/BJH + T-Plot "
         "Analysis Tool (v3.0.0). Zenodo. DOI: 10.5281/zenodo.22116897"

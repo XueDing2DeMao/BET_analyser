@@ -1,4 +1,37 @@
-# BET_analyser 🔬
+# BET_analyser 中文增强版 🔬
+
+用于气体物理吸附数据的 BET / BJH、t-plot、Rouquerol 和 Langmuir 分析。本仓库在原项目基础上增加中文界面与导出、ASAP 2460 报告兼容、受限格式的 SMP 原生读取，以及 Windows 便携打包工具。
+
+## 致谢与项目来源
+
+本项目基于 **[Hoda Jafari（GitHub: Hj1308）](https://github.com/Hj1308)** 开发的 **[BET_analyser](https://github.com/Hj1308/BET_analyser)** 进行二次开发。感谢原作者公开源代码、分析算法、参考数据、测试和文档，为本中文增强版提供了基础。
+
+- 原项目：<https://github.com/Hj1308/BET_analyser>
+- 中文增强版维护：[XueDing2DeMao](https://github.com/XueDing2DeMao)
+- 本仓库保留原项目 Git 历史、原作者署名和 [MIT 许可证](LICENSE)，遵循原许可证发布。
+- 原项目的 DOI 和 [CITATION.cff](CITATION.cff) 对应原作者的软件成果。研究中使用相关方法或软件时，请保留对原项目及相应文献的引用。
+
+本版为独立维护的衍生项目，新增功能与兼容性说明由本仓库维护者负责。
+
+## 本版功能与启动
+
+- 中文分析界面、图表、术语说明及 CSV 导出。
+- 支持 ASAP 2460 单工作表 XLS/XLSX 完整报告。
+- 支持已验证的 ASAP 2460 Version 3.01 氮气 SMP 文件；具体版本、校正配置及验证边界见 [SMP_FORMAT.md](SMP_FORMAT.md)。
+- 提供 [Windows 便携版构建工具](tools/PORTABLE.md)，便携构建使用 Windows x64 / Python 3.11.9。
+
+```bash
+git clone https://github.com/XueDing2DeMao/BET_analyser.git
+cd BET_analyser
+python -m pip install -r requirements.txt
+python -m streamlit run app_bet.py
+```
+
+浏览器界面启动后，可上传数据或使用 `examples/reference_mesoporous.xlsx` 合成示例。便携包中的实测样品与本地分析结果不随源码仓库发布。
+
+下方保留原项目的算法介绍和参考文献；原作者的在线演示对应上游版本，本版中文与 SMP 功能请按上述方式在本地启动。
+
+---
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22116897.svg)](https://doi.org/10.5281/zenodo.22116897)
 ![Version](https://img.shields.io/badge/version-v3.0.0-blue?style=flat-square)
@@ -6,9 +39,9 @@
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![IUPAC](https://img.shields.io/badge/IUPAC-2015%20compliant-orange?style=flat-square)
 [![Streamlit](https://img.shields.io/badge/demo-Streamlit-red?style=flat-square&logo=streamlit)](https://hj1308-bet-analyser-app-bet-tk3yef.streamlit.app/)
-[![tests](https://github.com/Hj1308/BET_analyser/actions/workflows/tests.yml/badge.svg)](https://github.com/Hj1308/BET_analyser/actions/workflows/tests.yml)
+[![tests](https://github.com/XueDing2DeMao/BET_analyser/actions/workflows/tests.yml/badge.svg)](https://github.com/XueDing2DeMao/BET_analyser/actions/workflows/tests.yml)
 
-**[▶ Try it in your browser](https://hj1308-bet-analyser-app-bet-tk3yef.streamlit.app/)** — no installation required. Upload an XLS/XLSX/CSV, or use `examples/reference_mesoporous.xlsx` from this repo.
+**[▶ 原作者在线演示 / Upstream demo](https://hj1308-bet-analyser-app-bet-tk3yef.streamlit.app/)** — no installation required. Upload an XLS/XLSX/CSV, or use `examples/reference_mesoporous.xlsx` from this repo.
 
 **Validated against published reference values.** On the BETSI round-robin
 isotherms (Osterrieth et al., *Adv. Mater.* **2022**, *34*, 2201502), the
@@ -19,7 +52,7 @@ them by 24–27 %. This comparison runs in CI on every commit
 (`tests/test_betsi_reference.py`).
 
 **Publication-Quality BET/BJH + T-Plot Analysis Tool**  
-Author: [Hoda Jafari](https://github.com/Hj1308) | MIT License
+Original author: [Hoda Jafari](https://github.com/Hj1308) | MIT License
 
 > **ODS kinetics & catalytic activity?**  
 > → See [CatLab-Tools](https://github.com/Hj1308/CatLab-Tools)
@@ -52,7 +85,7 @@ python bet_analysis.py --file examples/reference_mesoporous.xlsx --sample "refer
 ## 🚀 Quick Start
 
 ```bash
-git clone https://github.com/Hj1308/BET_analyser.git
+git clone https://github.com/XueDing2DeMao/BET_analyser.git
 cd BET_analyser
 pip install -r requirements.txt
 
@@ -81,6 +114,27 @@ reporting zero.
 ---
 
 ## 🖥️ Streamlit Web App
+
+### ASAP 2460 报告与 SMP 原始文件
+
+- **XLS/XLSX 可直接上传**：支持 ASAP 2460 的单工作表导出报告，按报告标题和表头识别，不要求工作表名为 `Sheet1`，也不依赖固定行列位置。
+- 请导出包含测试条件（`Analysis adsorptive`）、`Summary Report`、`Isotherm Linear Plot` 和 `BET Report` 的完整报告。当前计算模型使用 N₂ 数据及 cm³/g STP 吸附量单位。
+- BJH 分析还需 `BJH Adsorption Pore Distribution Report` 和 `BJH Adsorption dV/dD Pore Volume`。直径和 dV/dD 会转换为项目内部的半径和 dV/dr，绘图再还原；缺少 BJH 表时相应结果显示为缺失。
+- **SMP 可直接读取（受限格式）**：支持已验证的 ASAP 2460 Version 3.01 氮气原始文件，无需配套 XLS。程序按二进制目录读取样品质量、压力、累计投气量、自由空间及校正系数，还原 cm³(STP)/g 吸附/脱附等温线。BET 优先采用满足 Rouquerol 判据的区间；结果由本项目重新计算。
+- **兼容范围**：目前仅有一个真实 SMP/XLS 成对样品验证；容器版本 0200、样品子集 v19、测量子集 v13、气体子集 v15、逐点饱和蒸气压，以及已验证的样品管/气体校正配置。未知版本、配置、异常目录或损坏记录会拒绝解析，并提供 XLS/XLSX 入口。不要将此支持理解为任意厂家或任意版本的 SMP 通用解析。
+- 尚未解码 SMP 的仪器 BET/BJH 报告设置和分布表；需要原仪器报告值时，可勾选“改用仪器导出的 XLS/XLSX 报告”。不同的 BET 选区会产生不同结果。
+- CLI 同样支持直接传入已验证的 SMP 和 ASAP XLS/XLSX。
+
+```bash
+python bet_analysis.py --file sample.XLS --sample sample --rouquerol --no-show
+python bet_analysis.py --file sample.SMP --sample sample --rouquerol --no-show
+```
+
+表内缺失数值、非氮气吸附质、异常压力顺序、BET 数据不一致、BJH 孔径网格不一致及重复报告会在计算前报错。多个样品请分别导出。
+
+官方导出流程见 [ASAP 2460 操作手册](https://downloads.micromeritics.com/Guides/ASAP-2460-Operator-Manual-Rev-H-Dec-2024.pdf)。
+
+原生读取的公式、字段来源和验证边界见 [SMP_FORMAT.md](SMP_FORMAT.md)。
 
 `app_bet.py` provides a browser UI for the same analyses as the CLI, without
 writing Python:
@@ -396,9 +450,9 @@ See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 ---
 
-## Cite This Software
+## Cite the Original Software
 
-If you use BET_analyser in your research, please cite:
+If you use this derivative in your research, please credit this repository and cite the original BET_analyser software:
 
 > Jafari, H. (2026). *BET_analyser: Publication-Quality BET/BJH + T-Plot Analysis Tool* (v3.0.0). Zenodo.  
 > DOI: [10.5281/zenodo.22116897](https://doi.org/10.5281/zenodo.22116897)

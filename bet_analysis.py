@@ -28,6 +28,7 @@ from matplotlib.ticker import AutoMinorLocator
 from scipy.stats import linregress
 from scipy.interpolate import interp1d
 from tabulate import tabulate
+from zh_cn import setup_chinese_font, prepare_figure, zh
 
 from rouquerol import (
     select_bet_range,
@@ -102,6 +103,7 @@ def setup_plot_style():
         "ytick.right"        : True,
         "axes.grid"          : False,
     })
+    setup_chinese_font()
 
 # Color palette (colorblind-safe)
 C_ADS   = "#2166AC"   # blue
@@ -130,11 +132,11 @@ def _load_sheets(filepath: str) -> tuple:
     if str(filepath).lower().endswith(".xls"):
         from xls_reader import read_xls_sheets
         return read_xls_sheets(filepath)
-    xl = pd.ExcelFile(filepath, engine="openpyxl")
-    raw = {sh: pd.read_excel(filepath, sheet_name=sh,
-                             engine="openpyxl", header=None)
-           for sh in xl.sheet_names}
-    return xl.sheet_names, raw
+    with pd.ExcelFile(filepath, engine="openpyxl") as xl:
+        sheet_names = xl.sheet_names
+        raw = {sh: pd.read_excel(xl, sheet_name=sh, header=None)
+               for sh in sheet_names}
+    return sheet_names, raw
 
 
 def _fmt(value, spec: str, dash: str = "—") -> str:
@@ -292,6 +294,10 @@ def read_bet_xls(filepath: str) -> dict:
         If expected sheet names or row labels are not found in the file, or if
         a CSV fails read-time validation.
     """
+    if str(filepath).lower().endswith(".smp"):
+        from smp_reader import read_smp
+        with open(filepath, "rb") as source:
+            return read_smp(source.read())
     if str(filepath).lower().endswith(".csv"):
         return _read_csv_isotherm(filepath)
 
@@ -300,6 +306,10 @@ def read_bet_xls(filepath: str) -> dict:
     required_sheets = {"AdsDes", "BET", "BJH", "Summary"}
     missing = required_sheets - set(sheet_names)
     if missing:
+        from xls_reader import read_asap_report
+        asap_data = read_asap_report(raw)
+        if asap_data is not None:
+            return asap_data
         raise ValueError(
             f"Missing required sheet(s) in XLS file: {missing}. "
             f"Found sheets: {sheet_names}"
@@ -918,11 +928,11 @@ def plot_all(data: dict, iso_cls: dict, hyst_cls: dict,
     # ── [A] Isotherm ──────────────────────────────────────────
     ax = axes[0]
     ax.plot(ads[:, 0], ads[:, 1], "o-", color=C_ADS,
-            ms=4, lw=1.4, label="Adsorption")
+            ms=4, lw=1.4, label='吸附支')
     if len(des):
         sort_d = np.argsort(des[:, 0])[::-1]
         ax.plot(des[sort_d, 0], des[sort_d, 1], "s--",
-                color=C_DES, ms=4, lw=1.4, label="Desorption")
+                color=C_DES, ms=4, lw=1.4, label='脱附支')
         # Shade only the hysteresis loop: the p/p0 interval where both branches
         # exist, bounded by the two interpolated branches (not a single polygon
         # with straight closing edges, which produced a full-width wedge).
@@ -937,19 +947,19 @@ def plot_all(data: dict, iso_cls: dict, hyst_cls: dict,
             ax.fill_between(p_grid, Va_a_g, Va_d_g, alpha=0.10,
                             color=C_ADS, linewidth=0)
 
-    ax.set_xlabel(r"Relative Pressure ($p/p_0$)")
-    ax.set_ylabel(r"Volume Adsorbed (cm$^3$ g$^{-1}$ STP)")
+    ax.set_xlabel(r"相对压力 ($p/p_0$)")
+    ax.set_ylabel(r"吸附量 (cm$^3$ g$^{-1}$ STP)")
     ax.set_xlim(-0.01, 1.01)
     ax.set_ylim(bottom=0)
     ax.legend(loc="upper left")
     ax.xaxis.set_minor_locator(AutoMinorLocator())
     ax.yaxis.set_minor_locator(AutoMinorLocator())
 
-    iso_label  = iso_cls["type"]
+    iso_label  = zh(iso_cls["type"])
     hyst_label = hyst_cls["type"] if hyst_cls["type"] != "None" else ""
     ax_ann = iso_label + (f" / {hyst_label}" if hyst_label else "")
-    ax.text(0.03, 0.78, ax_ann, transform=ax.transAxes,
-            va="top", ha="left", fontsize=8.5,
+    ax.text(0.97, 0.05, ax_ann, transform=ax.transAxes,
+            va="bottom", ha="right", fontsize=8.5,
             bbox=dict(boxstyle="round,pad=0.3", fc="white",
                       ec="0.7", lw=0.7, alpha=0.9))
     _label_panel(ax, "A")
@@ -957,9 +967,9 @@ def plot_all(data: dict, iso_cls: dict, hyst_cls: dict,
     # ── [B] BET Plot ──────────────────────────────────────────
     ax = axes[1]
     ax.scatter(bet_res["all_pts"][:, 0], bet_res["all_pts"][:, 1],
-               color="0.75", s=20, zorder=2, label="Unused points")
+               color="0.75", s=20, zorder=2, label="未参与拟合的数据点")
     ax.scatter(bet_res["x"], bet_res["y"],
-               color=C_BET, s=30, zorder=4, label="Fitted points")
+               color=C_BET, s=30, zorder=4, label="拟合数据点")
     x_fit = np.linspace(bet_res["x"].min(), bet_res["x"].max(), 200)
     y_fit = bet_res["slope"] * x_fit + bet_res["intercept"]
     ax.plot(x_fit, y_fit, "-", color=C_BET, lw=1.6, zorder=3)
@@ -986,12 +996,12 @@ def plot_all(data: dict, iso_cls: dict, hyst_cls: dict,
     # artefact that appears in desorption BJH at 77 K (p/p₀ ≈ 0.42).
     ax = axes[2]
     if len(bjh) == 0:
-        ax.text(0.5, 0.5, "BJH not available\n(no BJH table supplied)",
+        ax.text(0.5, 0.5, "无法给出 BJH 结果\n（未提供 BJH 数据表）",
                 transform=ax.transAxes, ha="center", va="center",
                 fontsize=9, color="0.4")
         ax.set_xticks([])
         ax.set_yticks([])
-        ax.set_title("Differential PSD", fontsize=10)
+        ax.set_title("微分孔径分布", fontsize=10)
         _label_panel(ax, "C")
     else:
         # Instrument headers verified as radius ("rp/nm") and per-radius
@@ -1031,7 +1041,7 @@ def plot_all(data: dict, iso_cls: dict, hyst_cls: dict,
         ax.text(rp[peak_idx] + 0.5, dVdd[peak_idx] * 0.95,
                 f"{rp[peak_idx]:.1f} nm", fontsize=8, color=C_BJH)
 
-        ax.set_xlabel(r"Pore Diameter (nm)")
+        ax.set_xlabel(r"孔径（直径） (nm)")
         ax.set_ylabel(r"d$V_p$/d$d_p$  (cm$^3$ g$^{-1}$ nm$^{-1}$)")
         ax.set_xlim(left=0, right=x_max)
         ax.set_ylim(bottom=0)
@@ -1040,7 +1050,7 @@ def plot_all(data: dict, iso_cls: dict, hyst_cls: dict,
 
         ax.axvline(N2_CAVITATION_NM, ls=":", lw=0.8, color="0.6", alpha=0.7)
         ax.text(N2_CAVITATION_NM, ax.get_ylim()[1] * 0.9,
-                "cavitation\n(~3.4 nm)", fontsize=6.5, color="0.5",
+                "空化效应\n(~3.4 nm)", fontsize=6.5, color="0.5",
                 va="top", ha="left")
         _label_panel(ax, "C")
 
@@ -1049,22 +1059,22 @@ def plot_all(data: dict, iso_cls: dict, hyst_cls: dict,
     ax2 = ax.twinx()
 
     if len(bjh) == 0:
-        ax.text(0.5, 0.5, "BJH not available\n(no BJH table supplied)",
+        ax.text(0.5, 0.5, "无法给出 BJH 结果\n（未提供 BJH 数据表）",
                 transform=ax.transAxes, ha="center", va="center",
                 fontsize=9, color="0.4")
         ax.set_xticks([])
         ax.set_yticks([])
         ax2.set_yticks([])
-        ax.set_title("Cumulative Pore Volume", fontsize=10)
+        ax.set_title("累积孔容", fontsize=10)
         _label_panel(ax, "D")
     else:
         cum_Vp  = bjh[:, 2]
         cum_Sap = bjh[:, 3]
 
         ax.plot(rp, cum_Vp, "-", color=C_CUM, lw=1.5,
-                label=r"$V_p$ cumulative")
+                label=r"$V_p$（累积）")
         ax2.plot(rp, cum_Sap, "--", color=C_BJH, lw=1.5,
-                 label=r"$S_{ap}$ cumulative")
+                 label=r"$S_{ap}$（累积）")
 
         ax2.axhline(s["S_BET"], ls=":", lw=1.0, color=C_BET,
                     label=f"$S_{{BET}}$ = {s['S_BET']:.1f} m² g⁻¹")
@@ -1072,11 +1082,11 @@ def plot_all(data: dict, iso_cls: dict, hyst_cls: dict,
             ax2.axhline(s["S_BJH"], ls=":", lw=1.0, color=C_BJH,
                         label=f"$S_{{BJH}}$ = {s['S_BJH']:.1f} m² g⁻¹")
 
-        ax.set_xlabel(r"Pore Diameter (nm)")
-        vp_dir = " (from large d)" if decreasing else ""
-        ax.set_ylabel(r"Cum. Pore Volume" + vp_dir + r" (cm$^3$ g$^{-1}$)",
+        ax.set_xlabel(r"孔径（直径） (nm)")
+        vp_dir = "（从大孔径累积）" if decreasing else ""
+        ax.set_ylabel(r"累积孔容" + vp_dir + r" (cm$^3$ g$^{-1}$)",
                       color=C_CUM)
-        ax2.set_ylabel(r"Cum. Surface Area" + vp_dir + r" (m$^2$ g$^{-1}$)",
+        ax2.set_ylabel(r"累积比表面积" + vp_dir + r" (m$^2$ g$^{-1}$)",
                        color=C_BJH)
         ax.tick_params(axis="y", colors=C_CUM)
         ax2.tick_params(axis="y", colors=C_BJH)
@@ -1089,9 +1099,10 @@ def plot_all(data: dict, iso_cls: dict, hyst_cls: dict,
                   fontsize=7.5, loc="lower right")
         _label_panel(ax, "D")
 
-    fig.suptitle(f"BET/BJH Analysis — {sample_name}",
+    fig.suptitle(f"BET/BJH 分析 — {sample_name}",
                  fontsize=12, y=1.01, fontweight="bold")
 
+    prepare_figure(fig)
     plt.tight_layout()
 
     if save:
@@ -1202,8 +1213,9 @@ def print_report(data: dict, iso_cls: dict, hyst_cls: dict,
             print(f"    · {d}")
 
     if s.get("window_derived"):
+        method = "Rouquerol criteria" if s.get("window_method") == "Rouquerol" else "default range: 0.05 ≤ p/p₀ ≤ 0.35; expanded if necessary"
         print("\n  Note: the BET point window was derived from the data "
-              "(0.05 ≤ p/p₀ ≤ 0.35), not read from an instrument.")
+              f"({method}), not read from an instrument.")
 
     if not bet_res["C_valid"]:
         print("\n  ⚠  WARNING: BET C constant is NEGATIVE.")
@@ -1300,7 +1312,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="BET/BJH Analysis Tool — publication-quality figures")
     parser.add_argument("--file",   required=True,
-                        help="Path to BET instrument XLS/XLSX file")
+                        help="Path to supported SMP, XLS/XLSX report or isotherm CSV")
     parser.add_argument("--sample", default="Sample",
                         help="Sample name for plot title and file name")
     parser.add_argument("--no-show", action="store_true",
