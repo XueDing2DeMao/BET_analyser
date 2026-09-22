@@ -6,8 +6,11 @@ License : MIT
 """
 
 import io
+import hashlib
+import re
 import warnings
 from tempfile import TemporaryDirectory
+from zipfile import ZipFile, ZIP_DEFLATED
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -214,6 +217,295 @@ def _parse_csv_template(file_bytes: bytes) -> dict:
 # ════════════════════════════════════════════════════════════════════════════
 # HELPERS
 # ════════════════════════════════════════════════════════════════════════════
+
+def _read_uploaded_instrument(file_bytes: bytes, ext: str) -> dict:
+    """使用系统临时目录读取上传文件，并在解析后自动清理。"""
+    with TemporaryDirectory(prefix="bet-upload-") as tmp_dir:
+        tmp = Path(tmp_dir) / f"upload{ext}"
+        tmp.write_bytes(file_bytes)
+        return read_bet_xls(str(tmp))
+
+
+def _read_uploaded_data(file_bytes: bytes, filename: str) -> dict:
+    """单文件和批量入口共用格式识别，支持两种 CSV。"""
+    ext = Path(filename).suffix.lower()
+    if ext not in {".xls", ".xlsx", ".csv", ".smp"}:
+        raise ValueError("仅支持 SMP、XLS、XLSX 或 CSV 文件。")
+    if ext == ".csv":
+        first = next(
+            (line.strip() for line in file_bytes.decode("utf-8-sig").splitlines()
+             if line.strip() and not line.lstrip().startswith("#")), ""
+        )
+        if first.startswith("[") and "]" in first:
+            return _parse_csv_template(file_bytes)
+    return _read_uploaded_instrument(file_bytes, ext)
+
+
+def _batch_optional_results(data, iso, row, notes, use_rq, use_tplot):
+    """附加分析各自隔离失败，保留已得到的 BET 结果和诊断。"""
+    p, n = data["ads"].T
+    summary = data["summary"]
+    best = None
+    row["Rouquerol 状态"] = "未启用"
+    if use_rq:
+        try:
+            best = select_bet_range(p, n)["best"]
+            if best is None:
+                raise ValueError("未找到可用的拟合区间")
+            row.update({
+                "Rouquerol 状态": "通过" if best.valid else "未通过",
+                "Rouquerol 判据全部满足": zh(best.valid),
+                "Rouquerol 比表面积 (m²/g)": best.S_BET,
+                "Rouquerol 标准误差 (m²/g)": best.sigma_S_BET,
+                "Rouquerol C": best.C, "Rouquerol R²": best.R2,
+                "Rouquerol 相对压力下限": best.p_min,
+                "Rouquerol 相对压力上限": best.p_max,
+                "Rouquerol 点数": best.n_points,
+            })
+            if not best.valid:
+                notes.append("Rouquerol 未通过全部判据；该面积仅供诊断。")
+        except Exception as exc:
+            row["Rouquerol 状态"] = "未能确定"
+            notes.append(f"Rouquerol：{zh(exc)}")
+
+    row["t-plot 状态"] = "未启用"
+    if use_tplot:
+        try:
+            from tplot_analysis import TPlotAnalyser
+            rq_valid = best is not None and best.valid
+            area = best.S_BET if rq_valid else summary["S_BET"]
+            tp = TPlotAnalyser(
+                p, n, area, summary.get("Vp_total"),
+                c_constant=summary.get("C"),
+                total_pore_volume_reason=summary.get("Vp_total_reason"),
+            ).full_tplot_report()
+            row.update({
+                "t-plot 状态": "完成" if tp["micropore_analysis_possible"] else "低压数据不足",
+                "t-plot 模型": tp["model"],
+                "t-plot BET 来源": "Rouquerol" if rq_valid else row["BET 区间来源"],
+                "t-plot 参考曲线": tp["reference_curve"],
+                "t-plot 膜厚下限 (Å)": tp["t_range"][0],
+                "t-plot 膜厚上限 (Å)": tp["t_range"][1],
+                "t-plot 点数": tp["n_points"],
+                "t-plot 总比表面积 (m²/g)": tp["S_total_m2g"],
+                "t-plot 外比表面积 (m²/g)": tp["S_ext_m2g"],
+                "t-plot 微孔比表面积 (m²/g)": tp["S_micro_m2g"],
+                "t-plot 微孔孔容 (cm³/g)": tp["V_micro_cm3g"],
+                "介孔与大孔合计孔容 (cm³/g)": tp["V_meso_cm3g"],
+                "t-plot 2t (nm)": tp["2t_nm"],
+            })
+            if not tp["micropore_analysis_possible"]:
+                notes.append(zh(tp["micropore_analysis_reason"]))
+            notes.extend(zh(note) for note in tp.get("warnings", []))
+            if tp.get("low_confidence"):
+                notes.append(zh(tp["low_confidence_reason"]))
+            if tp["S_ext_m2g"] > area:
+                notes.append("t-plot 外比表面积高于所用 BET 面积，需检查参考曲线和拟合区间。")
+        except Exception as exc:
+            row["t-plot 状态"] = "未能确定"
+            notes.append(f"t-plot：{zh(exc)}")
+
+    try:
+        mask = np.isfinite(p) & np.isfinite(n) & (p > 0) & (p < 1) & (n > 0)
+        pl, nl = p[mask], n[mask]
+        if len(pl) < MIN_LANGMUIR_POINTS:
+            raise ValueError("至少需要 3 个有效吸附点")
+        lo, hi = _default_langmuir_range(pl)
+        mask = (pl >= lo - 1e-9) & (pl <= hi + 1e-9)
+        result = fit_langmuir_window(
+            pl[mask], nl[mask], has_hysteresis=iso["has_hysteresis"],
+            has_plateau=iso["has_plateau"], S_BET=summary["S_BET"],
+        )
+        row["Langmuir 状态"] = "通过" if result["model_applicable"] else "不适用"
+        row["Langmuir 相对压力下限"] = result["p_min"]
+        row["Langmuir 相对压力上限"] = result["p_max"]
+        if result["model_applicable"]:
+            row["Langmuir 比表面积 (m²/g)"] = result["S_Langmuir"]
+            row["Langmuir 标准误差 (m²/g)"] = result["sigma_S_Langmuir"]
+            row["Langmuir R²"] = result["R2"]
+        else:
+            notes.append("Langmuir 未通过模型适用性检查，不报告其面积。")
+    except Exception as exc:
+        row["Langmuir 状态"] = "未能确定"
+        notes.append(f"Langmuir：{zh(exc)}")
+
+
+def _default_langmuir_range(pressure):
+    lo, hi = float(np.min(pressure)), float(np.max(pressure))
+    if 0.30 <= lo or 0.05 >= hi:
+        return lo, hi
+    return max(0.05, lo), min(0.30, hi)
+
+
+def _analyse_batch_file(filename, content, index, use_rq, use_tplot):
+    """一份文件对应一个结果，读取失败也保留独立的汇总行。"""
+    name = Path(filename.replace("\\", "/")).stem
+    row = {"序号": index, "文件": filename, "样品": name, "状态": "失败"}
+    item = {"row": row, "error": None}
+    notes = []
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            data = _read_uploaded_data(content, filename)
+            iso = classify_isotherm(data["ads"], data["des"])
+            hyst = classify_hysteresis(data["ads"], data["des"])
+            bet = verify_bet(data["bet_pts"], data["summary"])
+            s = data["summary"]
+            # 回归函数可能返回 NaN/Inf；此类文件不能进入成功列表或详情绘图。
+            fit_values = [bet[key] for key in ("S_BET_calc", "Vm", "C", "R2", "slope", "intercept")]
+            report_values = [s[key] for key in ("S_BET", "Vm", "C")]
+            if not (np.isfinite(fit_values).all() and np.isfinite(report_values).all()
+                    and np.isfinite(bet["x"]).all() and np.isfinite(bet["y"]).all()):
+                raise ValueError("BET 数据或拟合结果包含非有限数值（NaN/Inf），请检查吸附量和拟合区间。")
+            instrument = s.get("instrument_summary", True)
+            peak = s.get("rp_peak_BJH")
+            row.update({
+                "状态": "完成",
+                "数据来源": "仪器/模板报告" if instrument else "原始等温线计算",
+                "BET 区间来源": s.get("window_method", "仪器/模板设定" if instrument else "默认压力范围"),
+                "吸附点数": len(data["ads"]), "脱附点数": len(data["des"]),
+                "BET 比表面积 (m²/g)": s["S_BET"],
+                "BET 重算比表面积 (m²/g)": bet["S_BET_calc"],
+                "BET 单层容量 (cm³(STP)/g)": s["Vm"],
+                "BET C": s["C"], "BET C 是否为正": zh(s["C"] > 0),
+                "BET 重算单层容量 (cm³(STP)/g)": bet["Vm"],
+                "BET 重算 C": bet["C"], "BET 重算 R²": bet["R2"],
+                "BET 重算 C 是否为正": zh(bet["C_valid"]),
+                "BET 相对压力下限": float(np.min(bet["x"])),
+                "BET 相对压力上限": float(np.max(bet["x"])),
+                "BET 拟合点数": len(bet["x"]),
+                "总孔容 (cm³/g)": s.get("Vp_total"),
+                "平均孔径 (nm)": s.get("dp_avg"),
+                "BJH 数据": "已提供" if len(data["bjh"]) else "未提供",
+                "BJH 比表面积 (m²/g)": s.get("S_BJH"),
+                "BJH 累积孔容 (cm³/g)": s.get("Vp_BJH"),
+                "BJH 峰值孔直径 (nm)": None if peak is None else peak * 2,
+                "等温线类型": zh(iso["type"]),
+                "滞后环类型": zh(hyst["type"]) if len(data["des"]) else "未提供脱附支",
+            })
+            notes.extend(f"报告参数：{zh(note)}" for note in validity_warnings(s, iso))
+            notes.extend(zh(note) for note in s.get("declined", {}).values())
+            _batch_optional_results(data, iso, row, notes, use_rq, use_tplot)
+            item.update(data=data, iso=iso, hyst=hyst, bet=bet)
+        except Exception as exc:
+            item["error"] = str(exc)
+            row["状态"] = "失败"
+            notes.append(zh(exc))
+    notes.extend(f"重算/附加分析：{zh(w.message)}" for w in caught if issubclass(w.category, UserWarning))
+    row["提示"] = "；".join(dict.fromkeys(notes))
+    if item["error"] is None and notes:
+        row["状态"] = "完成（有提示）"
+    return item
+
+
+def _batch_csv(frame):
+    """保持数值列可计算；防止文件名被电子表格当作公式。"""
+    def safe(value):
+        if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
+            return "'" + value
+        return value
+    return frame.apply(lambda column: column.map(safe)).to_csv(index=False).encode("utf-8-sig")
+
+
+def _make_batch_archive(results, progress):
+    buffer = io.BytesIO()
+    plot_errors = []
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("批量汇总.csv", _batch_csv(pd.DataFrame([r["row"] for r in results])))
+        failed = [r["row"] for r in results if r["error"] is not None]
+        if failed:
+            archive.writestr("失败记录.csv", _batch_csv(pd.DataFrame(failed)))
+        for index, item in enumerate(results, 1):
+            row = item["row"]
+            if item["error"] is None:
+                # 序号避免同名覆盖；过滤路径符号和 Windows 非法文件名字符。
+                safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", row["样品"]).strip(" .")[:80] or "样品"
+                folder = f"{index:03d}_{safe_name}"
+                report = pd.DataFrame(list(row.items()), columns=["参数", "数值"])
+                archive.writestr(f"{folder}/分析报告.csv", _batch_csv(report))
+                figures_before = set(plt.get_fignums())
+                try:
+                    plot_all(item["data"], item["iso"], item["hyst"],
+                             item["bet"], row["样品"], save=False)
+                    archive.writestr(f"{folder}/BET分析四联图.png", _fig_to_bytes(plt.gcf()))
+                except Exception as exc:
+                    plot_errors.append({"文件": row["文件"], "图像生成失败原因": zh(exc)})
+                finally:
+                    for number in set(plt.get_fignums()) - figures_before:
+                        plt.close(number)
+            progress.progress(index / len(results), text=f"正在打包 {index}/{len(results)}")
+        if plot_errors:
+            archive.writestr("图像生成失败记录.csv", _batch_csv(pd.DataFrame(plot_errors)))
+        archive.writestr(
+            "下载说明.txt",
+            "每个文件独立分析，同名文件用序号区分；失败文件保留在汇总和失败记录中。\n"
+            "BET 字段保留输入报告参数；带“重算”的字段来自原区间回归。Rouquerol 为独立自动选区；四联图采用原区间。\n"
+            "t-plot 使用默认 Harkins–Jura 曲线与默认膜厚区间；详细参数见报告。\n"
+            "空白数值表示缺失或不予报告，不等于零。请结合状态、提示及方法适用性解读。\n"
+            "标准误差仅为拟合传播误差。批量完成不代表各模型的适用性检查均通过。\n"
+        )
+    return buffer.getvalue(), plot_errors
+
+
+def _render_batch(files, use_rq, use_tplot):
+    """按内容和选项锁定一次批次，切换详情或下载时复用结果。"""
+    st.subheader("批量分析")
+    st.caption("每份文件独立作为一个样品；支持混合格式，同名 SMP/XLS 不自动配对。")
+    payloads = [(file.name, file.getvalue()) for file in (files or [])]
+    signature = (tuple((name, hashlib.sha256(raw).hexdigest()) for name, raw in payloads),
+                 use_rq, use_tplot)
+    state = st.session_state.get("bet_batch")
+    if state is not None and state["signature"] != signature:
+        st.session_state.pop("bet_batch")
+        st.session_state.pop("batch_detail", None)
+        state = None
+        st.info("文件或分析选项已变化，请重新开始批量分析。")
+    st.write(f"已选择 {len(payloads)} 个文件")
+    if st.button("开始批量分析", key="batch_start", disabled=not payloads, type="primary"):
+        progress = st.progress(0.0, text="准备分析…")
+        results = []
+        for index, (filename, content) in enumerate(payloads, 1):
+            results.append(_analyse_batch_file(filename, content, index, use_rq, use_tplot))
+            progress.progress(index / len(payloads), text=f"已处理 {index}/{len(payloads)}：{filename}")
+        state = {"signature": signature, "results": results}
+        st.session_state["bet_batch"] = state
+        progress.empty()
+    if state is None:
+        st.info("选择文件并点击“开始批量分析”，即可生成汇总与逐样品结果。")
+        return None
+    results = state["results"]
+    success = [item for item in results if item["error"] is None]
+    st.success(f"批量处理结束：{len(success)} 个文件完成，{len(results) - len(success)} 个文件失败。")
+    st.caption("“完成”表示计算流程完成；适用性、缺失数据及选区问题请查看各方法状态和“提示”。")
+    frame = pd.DataFrame([item["row"] for item in results])
+    st.dataframe(frame, use_container_width=True, hide_index=True)
+    st.download_button(
+        label="下载批量汇总 CSV", data=_batch_csv(frame),
+        file_name="BET_batch_summary.csv", mime="text/csv",
+    )
+    if st.button("生成批量结果 ZIP（含图表）", key="batch_zip", disabled=not success):
+        progress = st.progress(0.0, text="正在生成图表…")
+        state["archive"], state["plot_errors"] = _make_batch_archive(results, progress)
+        progress.empty()
+    if "archive" in state:
+        if state["plot_errors"]:
+            st.warning(f"{len(state['plot_errors'])} 个图像生成失败，原因已写入 ZIP；数值报告仍已保留。")
+        st.download_button(
+            label="下载批量结果 ZIP", data=state["archive"],
+            file_name="BET_batch_results.zip", mime="application/zip",
+        )
+    options = ["仅查看批量汇总"] + [
+        f"{item['row']['序号']:03d} · {item['row']['文件']}" for item in success
+    ]
+    detail = st.selectbox("查看单个样品详细分析", options, key="batch_detail")
+    if detail != options[0]:
+        selected = success[options.index(detail) - 1]["row"]
+        st.divider()
+        st.subheader(f"样品详情：{selected['样品']}")
+        st.caption("下方可单独调整选区；批量汇总保留本次批量运行的默认参数。")
+        return files[selected["序号"] - 1], selected["样品"], selected["序号"]
+    return None
+
 
 def _fig_to_bytes(fig) -> bytes:
     buf = io.BytesIO()
@@ -467,6 +759,7 @@ with st.sidebar:
     st.divider()
 
     st.subheader('📁 数据输入')
+    batch_mode = st.checkbox("批量导入与分析", value=False, key="batch_mode")
     input_mode = st.radio(
         '文件格式',
         ['仪器数据（SMP / XLS / XLSX）', '手动录入（CSV 模板）'],
@@ -484,14 +777,20 @@ with st.sidebar:
     uploaded = st.file_uploader(
         '上传数据文件',
         type=["xls", "xlsx", "csv", "smp"],
+        accept_multiple_files=batch_mode,
+        key="batch_files" if batch_mode else "single_file",
         help="支持已验证的 ASAP 2460 v3.01 SMP、单表 XLS/XLSX 和原有格式；未知 SMP 配置可改用仪器报告。",
     )
-    if uploaded is not None and Path(uploaded.name).suffix.lower() == ".smp":
+    if not batch_mode and uploaded is not None and Path(uploaded.name).suffix.lower() == ".smp":
         uploaded = _smp_export_upload(uploaded)
 
     st.divider()
-    default_sample = Path(uploaded.name).stem if uploaded is not None else '样品'
-    sample_name = st.text_input('样品名称', value=default_sample)
+    if batch_mode:
+        sample_name = ""
+        st.caption("批量样品名称取自文件名。未支持的 SMP 请换用仪器导出的 XLS/XLSX。")
+    else:
+        default_sample = Path(uploaded.name).stem if uploaded is not None else '样品'
+        sample_name = st.text_input('样品名称', value=default_sample)
 
     st.divider()
     st.subheader('⚙️ 分析选项')
@@ -530,6 +829,15 @@ with st.sidebar:
 st.title('🔬 BET / BJH 比表面积与孔结构分析')
 st.caption("气体物理吸附分析 · 依据 IUPAC 2015 建议")
 
+detail_scope = None
+if batch_mode:
+    selection = _render_batch(uploaded, use_rouquerol, show_tplot)
+    if selection is None:
+        st.stop()
+    uploaded, sample_name, sample_index = selection
+    batch_hash = hashlib.sha256(repr(st.session_state["bet_batch"]["signature"]).encode()).hexdigest()[:16]
+    detail_scope = f"{batch_hash}_{sample_index}"
+
 if uploaded is None:
     st.info("👈 从左侧上传数据文件，开始分析。")
     c1, c2, c3 = st.columns(3)
@@ -553,33 +861,10 @@ if uploaded is None:
     st.stop()
 
 
-def _read_uploaded_instrument(file_bytes: bytes, ext: str) -> dict:
-    """使用系统临时目录读取上传文件，并在解析后自动清理。"""
-    with TemporaryDirectory(prefix="bet-upload-") as tmp_dir:
-        tmp = Path(tmp_dir) / f"upload{ext}"
-        tmp.write_bytes(file_bytes)
-        return read_bet_xls(str(tmp))
-
-
 # ── Load & parse ─────────────────────────────────────────────────────────────────────
 with st.spinner("正在读取文件…"):
     try:
-        file_bytes = uploaded.read()
-        ext = Path(uploaded.name).suffix.lower()
-        if ext == ".csv":
-            # Distinguish the sectioned "Manual CSV" template from a plain
-            # two-column isotherm CSV.
-            first = ""
-            for line in file_bytes.decode("utf-8-sig", errors="ignore").splitlines():
-                if line.strip() and not line.lstrip().startswith("#"):
-                    first = line.strip()
-                    break
-            if first.startswith("[") and "]" in first:
-                data = _parse_csv_template(file_bytes)
-            else:
-                data = _read_uploaded_instrument(file_bytes, ext)
-        else:
-            data = _read_uploaded_instrument(file_bytes, ext)
+        data = _read_uploaded_data(uploaded.getvalue(), uploaded.name)
     except Exception as e:
         st.error(f"**文件读取失败：** {zh(e)}")
         st.stop()
@@ -864,12 +1149,7 @@ with tab_langmuir:
 
         # Conservative default (0.05–0.30), clamped to the available range so the
         # slider never crashes when the data does not cover the classic window.
-        default_lo, default_hi = 0.05, 0.30
-        if default_hi <= p_lo_data or default_lo >= p_hi_data:
-            default_lo, default_hi = p_lo_data, p_hi_data
-        else:
-            default_lo = max(default_lo, p_lo_data)
-            default_hi = min(default_hi, p_hi_data)
+        default_lo, default_hi = _default_langmuir_range(p_lang)
 
         step = max(round((p_hi_data - p_lo_data) / 200, 4), 0.001)
         lang_lo, lang_hi = st.slider(
@@ -879,6 +1159,7 @@ with tab_langmuir:
             value=(default_lo, default_hi),
             step=step,
             format="%.3f",
+            key=f"langmuir_range_{detail_scope}" if detail_scope else None,
         )
 
         mask = (p_lang >= lang_lo - 1e-9) & (p_lang <= lang_hi + 1e-9)
@@ -1184,6 +1465,7 @@ with tab_tplot:
                 use_rq_sbet = st.checkbox(
                     "t-plot 分析采用 Rouquerol 的 S_BET",
                     value=True,
+                    key=f"tplot_rq_{detail_scope}" if detail_scope else None,
                     help=("BET 比表面积的选取会影响与外比表面积的比较。"
                           "采用满足 Rouquerol 判据的 S_BET，"
                           "可统一各项报告中 BET 比表面积的来源。"),
@@ -1197,6 +1479,7 @@ with tab_tplot:
                 "t-plot 拟合膜厚区间（Å）",
                 min_value=LINE1_T_MIN, max_value=8.0,
                 value=(LINE1_T_MIN, HJ_VALID_T_MAX), step=0.1,
+                key=f"tplot_range_{detail_scope}" if detail_scope else None,
                 help=("双线段 t-plot 拟合区间。默认从第一线段的最低膜厚"
                       "（微孔填充区，p/p₀ ≈ 0.005）延伸至"
                       "第二线段的最高膜厚；第二线段限制在"
