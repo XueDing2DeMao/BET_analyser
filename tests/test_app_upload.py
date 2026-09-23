@@ -17,7 +17,7 @@ APP_TIMEOUT_SECONDS = 30
 def test_uploaded_example_reaches_analysis(monkeypatch, filename):
     uploaded = BytesIO((PROJECT_ROOT / "examples" / filename).read_bytes())
     uploaded.name = filename
-    monkeypatch.setattr("streamlit.file_uploader", lambda *args, **kwargs: uploaded)
+    monkeypatch.setattr("streamlit.file_uploader", lambda *args, **kwargs: [uploaded])
 
     app = AppTest.from_file(
         str(PROJECT_ROOT / "app_bet.py"), default_timeout=APP_TIMEOUT_SECONDS
@@ -26,7 +26,7 @@ def test_uploaded_example_reaches_analysis(monkeypatch, filename):
     assert [] == [error.value for error in app.error]
     assert [] == [error.message for error in app.exception]
     assert "📊 总览" in [tab.label for tab in app.tabs]
-    assert ["参数", "数值", "单位"] == list(app.dataframe[0].value.columns)
+    assert any(list(df.value.columns) == ["参数", "数值", "单位"] for df in app.dataframe)
 
 
 def test_home_page_uses_chinese():
@@ -34,5 +34,5 @@ def test_home_page_uses_chinese():
 
     assert [] == [error.message for error in app.exception]
     assert "🔬 BET / BJH 比表面积与孔结构分析" == app.main.title[0].value
-    assert "文件格式" == app.radio[0].label
+    assert any("自动识别" in caption.value for caption in app.caption)
     assert "样品名称" == app.text_input[0].label

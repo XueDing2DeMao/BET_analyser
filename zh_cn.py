@@ -1,7 +1,19 @@
 """中文显示适配；仅转换说明文本，不修改分析结果或仪器字段。"""
 
 from functools import lru_cache
+from contextlib import contextmanager
 import re
+from threading import RLock
+
+
+_MATPLOTLIB_LOCK = RLock()
+
+
+@contextmanager
+def matplotlib_rendering():
+    """串行化 Matplotlib 排版/渲染，保护其进程级公式解析器。"""
+    with _MATPLOTLIB_LOCK:
+        yield
 
 
 ISO_DESCRIPTIONS = {

@@ -32,6 +32,16 @@ def test_smp_uses_correction_fields_instead_of_sample_constants(tmp_path):
     np.testing.assert_allclose(source['ads'], read_bytes(tmp_path, data)['ads'], rtol=1e-12)
 
 
+@pytest.mark.parametrize('measurement_id,tube_id', [(1, 'my'), (2, 'my'), (3, 'nz')])
+def test_native_smp_accepts_measurement_and_tube_identifiers(tmp_path, measurement_id, tube_id):
+    data, source = make_smp(
+        measurement_id=measurement_id, prior_mode='zero', tube_id=tube_id,
+    )
+    actual = read_bytes(tmp_path, data)
+    np.testing.assert_allclose(source['ads'], actual['ads'], rtol=1e-12)
+    np.testing.assert_allclose(source['des'], actual['des'], rtol=1e-12)
+
+
 @pytest.mark.parametrize('damage', ['version', 'truncated', 'directory', 'gas', 'mass', 'record', 'options', 'gas_area', 'nonfinite', 'p0', 'branch_count', 'overlap'])
 def test_unsupported_or_corrupt_smp_is_rejected(tmp_path, damage):
     raw, _ = make_smp()
@@ -78,7 +88,7 @@ def test_native_smp_upload_needs_no_companion(monkeypatch):
     data, _ = make_smp()
     def uploader(*args, **kwargs):
         assert 'smp_export' != kwargs.get('key')
-        return upload_value(data, 'native.SMP')
+        return [upload_value(data, 'native.SMP')]
     monkeypatch.setattr('streamlit.file_uploader', uploader)
     app = run_app()
     assert [] == [e.message for e in app.exception]

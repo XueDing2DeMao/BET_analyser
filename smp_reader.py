@@ -15,6 +15,8 @@ from smp_binary import (
 STANDARD_PRESSURE_MMHG = 760.
 TUBE_PROFILE_SIZE = 202
 TUBE_ALPHA_OFFSET = 139
+TUBE_ID_OFFSET = 178
+TUBE_ID_SIZE = 4
 # 仅允许已核验的样品管/线性状态方程/无热迁移校正配置。
 # alpha 的 8 字节清零后比较，避免固化样品测量数值。
 TUBE_PROFILE = bytes.fromhex(
@@ -61,6 +63,14 @@ def _corrections(reader, alpha):
     tube = bytearray(reader.take(TUBE_PROFILE_SIZE))
     tube_alpha, = struct.unpack_from('<d', tube, TUBE_ALPHA_OFFSET)
     tube[TUBE_ALPHA_OFFSET:TUBE_ALPHA_OFFSET + 8] = bytes(8)
+    tube_id = tube[TUBE_ID_OFFSET:TUBE_ID_OFFSET + TUBE_ID_SIZE]
+    require(
+        tube_id[1::2] == bytes(2) and all(ord('a') <= value <= ord('z') for value in tube_id[::2]),
+        '样品管标识无效',
+    )
+    tube[TUBE_ID_OFFSET:TUBE_ID_OFFSET + TUBE_ID_SIZE] = TUBE_PROFILE[
+        TUBE_ID_OFFSET:TUBE_ID_OFFSET + TUBE_ID_SIZE
+    ]
     require(tube == TUBE_PROFILE and tube_alpha == alpha, '样品管或气体校正配置尚不支持')
     reader.expect(b'\x01\x00')
     offset_fraction, gradient_fraction = reader.unpack('dd')

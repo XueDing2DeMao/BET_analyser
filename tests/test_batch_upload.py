@@ -1,4 +1,4 @@
-"""批量导入、失败隔离、结果失效和完整下载流程。"""
+"""批量导入、失败隔离、结果快照和完整下载流程。"""
 from io import BytesIO, StringIO
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
@@ -33,14 +33,14 @@ def batch_app(monkeypatch, files):
         lambda **kw: downloads.update({kw["file_name"]: kw["data"]}),
     )
     app = AppTest.from_file(str(ROOT / "app_bet.py"), default_timeout=90).run()
-    app.checkbox(key="batch_mode").check().run()
     return app, downloads
 
 
 def start(app):
-    app.button(key="batch_start").click().run()
     assert [] == [e.message for e in app.exception]
-    return app.dataframe[0].value
+    assert not any(c.key == "batch_mode" for c in app.checkbox)
+    assert not any(b.key == "batch_start" for b in app.button)
+    return pd.DataFrame([item["row"] for item in app.session_state["bet_batch"]["results"]])
 
 
 def test_mixed_batch_keeps_valid_samples_when_one_file_fails(monkeypatch, tmp_path):
@@ -54,7 +54,7 @@ def test_mixed_batch_keeps_valid_samples_when_one_file_fails(monkeypatch, tmp_pa
         ("损坏.csv", b"pressure,adsorbed\n0.1,1\n"),
     ]
     app, downloads = batch_app(monkeypatch, files)
-    assert "BET_batch_summary.csv" not in downloads
+    assert "BET_batch_summary.csv" in downloads
     rows = start(app)
     assert [f[0] for f in files] == rows["文件"].tolist()
     assert rows["状态"].iloc[:3].str.startswith("完成").all()
@@ -72,7 +72,7 @@ def test_mixed_batch_keeps_valid_samples_when_one_file_fails(monkeypatch, tmp_pa
     assert "Langmuir 状态" in exported.columns
 
 
-def test_batch_rerun_reuses_results_and_changes_invalidate_them(monkeypatch):
+def test_upload_analyzes_automatically_and_clearing_removes_results(monkeypatch):
     original = (ROOT / "examples/betsi_HKUST-1.csv").read_bytes()
     files = [("sample.csv", original)]
     app, downloads = batch_app(monkeypatch, files)
@@ -81,31 +81,32 @@ def test_batch_rerun_reuses_results_and_changes_invalidate_them(monkeypatch):
     monkeypatch.setattr("rouquerol.select_bet_range", lambda *a, **kw: calls.append(1))
     app.run()
     assert not calls
-    assert rows.equals(app.dataframe[0].value)
+    assert rows[app.sidebar.dataframe[0].value.columns].equals(app.sidebar.dataframe[0].value)
     files[0] = ("sample.csv", b"pressure,adsorbed\n0.1,1\n")
     downloads.clear()
     app.run()
-    assert 0 == len(app.dataframe)
-    assert "BET_batch_summary.csv" not in downloads
-    assert any("重新" in item.value for item in app.info)
     assert "失败" == start(app)["状态"].iloc[0]
+    assert len(app.tabs) == 0
+    assert "BET_batch_summary.csv" in downloads
+    assert not any("待重新计算" in item.value for item in app.warning)
     downloads.clear()
     files.clear()
     app.run()
-    assert app.button(key="batch_start").disabled
-    assert 0 == len(app.dataframe)
+    assert len(app.dataframe) == 0
+    assert "bet_batch" not in app.session_state
     assert "BET_batch_summary.csv" not in downloads
 
 
-def test_batch_option_changes_require_new_run(monkeypatch):
+def test_analysis_options_apply_automatically(monkeypatch):
     files = [("reference.xlsx", (ROOT / "examples/reference_mesoporous.xlsx").read_bytes())]
     app, downloads = batch_app(monkeypatch, files)
     start(app)
     option = next(c for c in app.checkbox if c.label.startswith("按 Rouquerol"))
     downloads.clear()
     option.uncheck().run()
-    assert 0 == len(app.dataframe)
-    assert "BET_batch_summary.csv" not in downloads
+    assert len(app.tabs) == 7
+    assert "BET_batch_summary.csv" in downloads
+    assert not any("待重新计算" in item.value for item in app.warning)
     rows = start(app)
     assert "未启用" == rows["Rouquerol 状态"].iloc[0]
     assert "Rouquerol 比表面积 (m²/g)" not in rows or pd.isna(rows["Rouquerol 比表面积 (m²/g)"].iloc[0])
@@ -144,7 +145,6 @@ def test_batch_zip_preserves_duplicate_names_and_detail_view(monkeypatch):
 def test_batch_accepts_sectioned_csv_template(monkeypatch):
     files = []
     app, downloads = batch_app(monkeypatch, files)
-    app.radio[0].set_value("手动录入（CSV 模板）").run()
     files.append(("模板.csv", downloads["BET_template.csv"]))
     app.run()
     rows = start(app)

@@ -90,7 +90,9 @@ def sample_metadata(payload):
 
 
 def measurement_header(reader):
-    reader.expect(b'\x0d\xe0\x03\x00\x09\x01\x00\x01\x00')
+    reader.expect(b'\x0d\xe0\x03\x00\x09\x01\x00')
+    measurement_id, = reader.unpack('H')
+    require(measurement_id > 0, '测量序号无效')
     versions = [reader.string(), reader.string()]
     require(versions == ['ASAP 2460 Version 3.01'] * 2, '仅验证了 ASAP 2460 Version 3.01')
     serial = reader.string()
@@ -102,20 +104,23 @@ def measurement_header(reader):
 def measurement_points(reader):
     count, = reader.unpack('I')
     require(5 <= count <= (len(reader.data) - reader.pos) // RECORD_SIZE - 1, '测量点数无效')
-    rows, times, previous = [], [], 0.
+    rows, times, relatives, priors = [], [], [], []
     for i in range(count + 1):
         reader.expect(RECORD_PREFIX)
         pressure, relative, dose, minutes = reader.unpack('dddH')
         reader.expect(bytes(3))
         prior, = reader.unpack('d')
         reader.expect(bytes(16) + b'\x05\x00')
-        require(prior == previous, '测量记录链不连续')
-        previous = relative
+        relatives.append(relative)
+        priors.append(prior)
         if i == 0:
             require((pressure, relative, dose, minutes) == (0., 0., 0., 0), '初始记录不支持')
             continue
         rows.append((pressure, relative, dose))
         times.append(minutes)
+    chained = np.array_equal(priors, [0., *relatives[:-1]])
+    unchained = not any(priors)
+    require(chained or unchained, '测量记录链不连续')
     points = np.array(rows)
     require(np.isfinite(points).all(), '测量数据包含非有限数值')
     require((points[:, :2] > 0).all() and (points[:, 1] <= 1).all(), '压力超出物理范围')

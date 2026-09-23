@@ -23,7 +23,7 @@ def run_app():
 def test_asap_upload_reaches_all_analysis_tabs(monkeypatch, tmp_path):
     path = tmp_path / "asap.xlsx"
     save_asap_workbook(path)
-    monkeypatch.setattr("streamlit.file_uploader", lambda *args, **kw: upload_value(path.read_bytes(), "asap.XLSX"))
+    monkeypatch.setattr("streamlit.file_uploader", lambda *args, **kw: [upload_value(path.read_bytes(), "asap.XLSX")])
     app = run_app()
     assert [] == [e.message for e in app.exception]
     assert 7 == len(app.tabs)
@@ -35,7 +35,7 @@ def test_smp_requests_export_without_analysis(monkeypatch):
         if kwargs.get("key") == "smp_export":
             return None
         assert "smp" in kwargs["type"]
-        return upload_value(SMP_BYTES, "sample.SMP")
+        return [upload_value(SMP_BYTES, "sample.SMP")]
     monkeypatch.setattr("streamlit.file_uploader", uploader)
     app = run_app()
     assert [] == [e.message for e in app.exception]
@@ -49,7 +49,7 @@ def test_smp_with_export_reaches_analysis(monkeypatch, tmp_path):
     def uploader(*args, **kwargs):
         if kwargs.get("key") == "smp_export":
             return upload_value(path.read_bytes(), "sample.xlsx")
-        return upload_value(SMP_BYTES, "sample.SMP")
+        return [upload_value(SMP_BYTES, "sample.SMP")]
     monkeypatch.setattr("streamlit.file_uploader", uploader)
     app = run_app()
     assert [] == [e.message for e in app.exception]
@@ -57,7 +57,7 @@ def test_smp_with_export_reaches_analysis(monkeypatch, tmp_path):
 
 
 def test_invalid_smp_is_explained_before_analysis(monkeypatch):
-    monkeypatch.setattr("streamlit.file_uploader", lambda *args, **kw: upload_value(b"not a sample file", "wrong.smp"))
+    monkeypatch.setattr("streamlit.file_uploader", lambda *args, **kw: [upload_value(b"not a sample file", "wrong.smp")])
     app = run_app()
     assert [] == [e.message for e in app.exception]
     assert any("无法识别此 SMP" in e.value for e in app.error)

@@ -28,7 +28,7 @@ from matplotlib.ticker import AutoMinorLocator
 from scipy.stats import linregress
 from scipy.interpolate import interp1d
 from tabulate import tabulate
-from zh_cn import setup_chinese_font, prepare_figure, zh
+from zh_cn import setup_chinese_font, prepare_figure, zh, matplotlib_rendering
 
 from rouquerol import (
     select_bet_range,
@@ -1103,17 +1103,18 @@ def plot_all(data: dict, iso_cls: dict, hyst_cls: dict,
                  fontsize=12, y=1.01, fontweight="bold")
 
     prepare_figure(fig)
-    plt.tight_layout()
+    with matplotlib_rendering():
+        fig.tight_layout()
 
-    if save:
-        out = f"{sample_name.replace(' ', '_')}_BET_analysis.png"
-        fig.savefig(out, dpi=300, bbox_inches="tight")
-        print(f"\n  Figure saved → {out}")
+        if save:
+            out = f"{sample_name.replace(' ', '_')}_BET_analysis.png"
+            fig.savefig(out, dpi=300, bbox_inches="tight")
+            print(f"\n  Figure saved → {out}")
 
-    if show:
-        plt.show()
-    else:
-        plt.close(fig)
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
 
 
 def _label_panel(ax, letter):

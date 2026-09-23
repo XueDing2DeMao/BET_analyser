@@ -95,7 +95,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import linregress
 
 from bet_analysis import N2_TPLOT_SLOPE_FACTOR, N2_STP_TO_LIQUID
-from zh_cn import setup_chinese_font, prepare_figure, zh
+from zh_cn import setup_chinese_font, prepare_figure, zh, matplotlib_rendering
 
 # ── Publication style (matches bet_analysis.py) ────────────────
 plt.rcParams.update({
@@ -1067,9 +1067,10 @@ class TPlotAnalyser:
         fig.suptitle(f"t-plot 分析 — {sample_name}",
                      fontsize=13, fontweight="bold", y=1.02)
         prepare_figure(fig)
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-        plt.close()
+        with matplotlib_rendering():
+            fig.tight_layout()
+            fig.savefig(save_path, dpi=300, bbox_inches="tight")
+            plt.close(fig)
         return save_path
 
 
